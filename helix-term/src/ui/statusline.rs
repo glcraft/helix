@@ -7,9 +7,11 @@ use helix_view::{
     document::{Mode, SCRATCH_BUFFER_NAME},
     graphics::Rect,
     theme::Style,
-    Document, Editor, View,
+    Document, Editor,
 };
+use helix_view::{DocumentId, ViewId};
 
+use crate::job::Jobs;
 use crate::ui::ProgressSpinners;
 
 use helix_view::editor::StatusLineElement as StatusLineElementID;
@@ -17,9 +19,11 @@ use tui::buffer::Buffer as Surface;
 use tui::text::{Span, Spans};
 
 pub struct RenderContext<'a> {
-    pub editor: &'a Editor,
-    pub doc: &'a Document,
-    pub view: &'a View,
+    pub editor: &'a mut Editor,
+    #[allow(dead_code)]
+    pub jobs: &'a mut Jobs,
+    pub view_id: ViewId,
+    pub doc_id: DocumentId,
     pub focused: bool,
     pub spinners: &'a ProgressSpinners,
     pub parts: RenderBuffer<'a>,
@@ -27,16 +31,18 @@ pub struct RenderContext<'a> {
 
 impl<'a> RenderContext<'a> {
     pub fn new(
-        editor: &'a Editor,
-        doc: &'a Document,
-        view: &'a View,
+        editor: &'a mut Editor,
+        jobs: &'a mut Jobs,
+        view_id: ViewId,
+        doc_id: DocumentId,
         focused: bool,
         spinners: &'a ProgressSpinners,
     ) -> Self {
         RenderContext {
             editor,
-            doc,
-            view,
+            jobs,
+            view_id,
+            doc_id,
             focused,
             spinners,
             parts: RenderBuffer::default(),
@@ -59,16 +65,40 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     };
 
     surface.set_style(viewport.with_height(1), base_style);
-
-    // Left side of the status line.
-
     let config = context.editor.config();
 
+    macro_rules! render_elem {
+        ($side:ident $element:expr) => {
+            // calling external function makes sense here to special case
+            #[cfg(feature = "steel")]
+            {
+                if let helix_view::editor::StatusLineElement::Custom(val) = $element {
+                    let mut ctx = crate::compositor::Context {
+                        editor: context.editor,
+                        scroll: None,
+                        jobs: context.jobs,
+                    };
+                    let spans = crate::commands::engine::steel::components::render_custom_status(
+                        &val,
+                        &mut ctx,
+                        context.view_id,
+                        context.focused,
+                    );
+                    spans.into_iter().for_each(|e| {
+                        append(&mut context.parts.$side, e, base_style);
+                    });
+                    continue;
+                }
+            }
+            let render = get_render_function(&$element);
+            (render)(context, |context, span| {
+                append(&mut context.parts.$side, span, base_style)
+            });
+        };
+    }
+
     for element_id in &config.statusline.left {
-        let render = get_render_function(*element_id);
-        (render)(context, |context, span| {
-            append(&mut context.parts.left, span, base_style)
-        });
+        render_elem!(left element_id);
     }
 
     surface.set_spans(
@@ -81,10 +111,7 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     // Right side of the status line.
 
     for element_id in &config.statusline.right {
-        let render = get_render_function(*element_id);
-        (render)(context, |context, span| {
-            append(&mut context.parts.right, span, base_style)
-        })
+        render_elem!(right element_id);
     }
 
     surface.set_spans(
@@ -100,10 +127,7 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     // Center of the status line.
 
     for element_id in &config.statusline.center {
-        let render = get_render_function(*element_id);
-        (render)(context, |context, span| {
-            append(&mut context.parts.center, span, base_style)
-        })
+        render_elem!(center element_id);
     }
 
     // Width of the empty space between the left and center area and between the center and right area.
@@ -126,7 +150,9 @@ fn append<'a>(buffer: &mut Spans<'a>, mut span: Span<'a>, base_style: Style) {
     buffer.0.push(span);
 }
 
-fn get_render_function<'a, F>(element_id: StatusLineElementID) -> impl Fn(&mut RenderContext<'a>, F)
+fn get_render_function<'a, F>(
+    element_id: &StatusLineElementID,
+) -> impl Fn(&mut RenderContext<'a>, F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
@@ -159,6 +185,8 @@ where
         helix_view::editor::StatusLineElement::Register => render_register,
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
         helix_view::editor::StatusLineElement::CodeActionHint => render_code_action_hint,
+        #[cfg(feature = "steel")]
+        _ => unreachable!(),
     }
 }
 
@@ -196,10 +224,11 @@ fn render_lsp_spinner<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    write(
-        context,
+    let spinner = {
         context
-            .doc
+            .editor
+            .document(context.doc_id)
+            .unwrap()
             .language_servers()
             .find_map(|srv| {
                 context
@@ -209,8 +238,9 @@ where
             })
             // Even if there's no spinner; reserve its space to avoid elements frequently shifting.
             .unwrap_or(" ")
-            .into(),
-    );
+            .to_string()
+    };
+    write(context, spinner.into());
 }
 
 fn render_diagnostics<'a, F>(context: &mut RenderContext<'a>, write: F)
@@ -218,11 +248,9 @@ where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     use helix_core::diagnostic::Severity;
-
+    let doc = context.editor.document(context.doc_id).unwrap();
     let (hints, info, warnings, errors) =
-        context
-            .doc
-            .diagnostics()
+        doc.diagnostics()
             .iter()
             .fold((0, 0, 0, 0), |mut counts, diag| {
                 match diag.severity {
@@ -384,7 +412,8 @@ fn render_selections<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let selection = context.doc.selection(context.view.id);
+    let doc = get_doc(context);
+    let selection = doc.selection(context.view_id);
     let count = selection.len();
     write(
         context,
@@ -400,21 +429,25 @@ fn render_primary_selection_length<'a, F>(context: &mut RenderContext<'a>, write
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let tot_sel = context.doc.selection(context.view.id).primary().len();
+    let doc = get_doc(context);
+    let tot_sel = doc.selection(context.view_id).primary().len();
     write(
         context,
         format!(" {} char{} ", tot_sel, if tot_sel == 1 { "" } else { "s" }).into(),
     );
 }
 
+fn get_doc<'a>(context: &'a RenderContext) -> &'a Document {
+    context.editor.document(context.doc_id).unwrap()
+}
+
 fn get_position(context: &RenderContext) -> Position {
+    let doc = get_doc(context);
     coords_at_pos(
-        context.doc.text().slice(..),
-        context
-            .doc
-            .selection(context.view.id)
+        doc.text().slice(..),
+        doc.selection(context.view_id)
             .primary()
-            .cursor(context.doc.text().slice(..)),
+            .cursor(doc.text().slice(..)),
     )
 }
 
@@ -433,7 +466,8 @@ fn render_total_line_numbers<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let total_line_numbers = context.doc.text().len_lines();
+    let doc = get_doc(context);
+    let total_line_numbers = doc.text().len_lines();
 
     write(context, format!(" {} ", total_line_numbers).into());
 }
@@ -443,7 +477,7 @@ where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     let position = get_position(context);
-    let maxrows = context.doc.text().len_lines();
+    let maxrows = get_doc(context).text().len_lines();
     write(
         context,
         format!("{}%", (position.row + 1) * 100 / maxrows).into(),
@@ -454,7 +488,7 @@ fn render_file_encoding<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let enc = context.doc.encoding();
+    let enc = get_doc(context).encoding();
 
     if enc != encoding::UTF_8 {
         write(context, format!(" {} ", enc.name()).into());
@@ -466,7 +500,7 @@ where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     use helix_core::LineEnding::*;
-    let line_ending = match context.doc.line_ending {
+    let line_ending = match get_doc(context).line_ending {
         Crlf => "CRLF",
         LF => "LF",
         #[cfg(feature = "unicode-lines")]
@@ -493,8 +527,11 @@ where
     let theme = context.editor.theme.as_ref();
     let icons = ICONS.load();
 
-    let lang = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
-    let path = context.doc.path();
+    let lang = get_doc(context)
+        .language_name()
+        .unwrap_or(DEFAULT_LANGUAGE_NAME)
+        .to_string();
+    let path = get_doc(context).path().map(std::path::Path::to_path_buf);
 
     if let Some(file) = icons.fs().file() {
         if let Some(path) = path {
@@ -511,11 +548,13 @@ fn render_file_name<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
+    let doc = get_doc(context);
     let title = {
-        let rel_path = context.doc.relative_path();
+        let rel_path = doc.relative_path();
         let path = rel_path
             .as_ref()
             .map(|p| p.to_string_lossy())
+            .or_else(|| doc.name.as_ref().map(|x| x.into()))
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
         format!(" {} ", path)
     };
@@ -528,9 +567,8 @@ where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
     let title = {
-        let path = context
-            .doc
-            .path()
+        let path = get_doc(context).path();
+        let path = path
             .as_ref()
             .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |p| p.to_string_lossy());
         format!(" {} ", path)
@@ -543,7 +581,7 @@ fn render_file_modification_indicator<'a, F>(context: &mut RenderContext<'a>, wr
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    if context.doc.is_modified() {
+    if get_doc(context).is_modified() {
         let icons = ICONS.load();
         let icon = icons.ui().indicator().modified();
         write(context, Span::from(icon));
@@ -556,7 +594,7 @@ fn render_read_only_indicator<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    if context.doc.readonly {
+    if get_doc(context).readonly {
         let icons = ICONS.load();
         let icon = icons.ui().indicator().readonly();
         write(context, Span::from(icon));
@@ -569,11 +607,13 @@ fn render_file_base_name<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
+    let doc = get_doc(context);
     let title = {
-        let rel_path = context.doc.relative_path();
+        let rel_path = doc.relative_path();
         let path = rel_path
             .as_ref()
             .and_then(|p| p.file_name().map(|s| s.to_string_lossy()))
+            .or_else(|| doc.name.as_ref().map(|x| x.into()))
             .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into());
         format!(" {} ", path)
     };
@@ -602,7 +642,7 @@ fn render_version_control<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let head = context.doc.version_control_head().unwrap_or_default();
+    let head = get_doc(context).version_control_head().unwrap_or_default();
     if !head.is_empty() {
         let icons = ICONS.load();
 
@@ -641,7 +681,7 @@ fn render_file_indent_style<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let style = context.doc.indent_style;
+    let style = get_doc(context).indent_style;
 
     write(
         context,
@@ -671,7 +711,8 @@ fn render_code_action_hint<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    if context.focused && context.doc.code_action_hints(context.view.id) {
+    let doc = get_doc(context);
+    if context.focused && doc.code_action_hints(context.view_id) {
         write(context, " ⋮ ".into())
     }
 }
