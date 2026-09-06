@@ -385,6 +385,8 @@ pub struct Config {
     pub whitespace: WhitespaceConfig,
     /// Persistently display open buffers along the top
     pub bufferline: BufferLine,
+    /// Persistently display breadcrumb along the top of each view, below any bufferline.
+    pub breadcrumb: BreadcrumbConfig,
     /// Vertical indent width guides.
     pub indent_guides: IndentGuidesConfig,
     /// Whether to color modes with different colors. Defaults to `false`.
@@ -511,6 +513,23 @@ impl Config {
                 .right
                 .contains(&StatusLineElement::CodeActionHint)
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
+pub struct BreadcrumbConfig {
+    pub enable: bool,
+    #[serde(default)]
+    pub path: BreadcrumbPathOptions,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
+#[serde(rename_all = "kebab-case")]
+pub enum BreadcrumbPathOptions {
+    #[default]
+    Full,
+    File,
+    None,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -678,7 +697,6 @@ pub struct StatusLineConfig {
     pub left: Vec<StatusLineElement>,
     pub center: Vec<StatusLineElement>,
     pub right: Vec<StatusLineElement>,
-    pub separator: String,
     pub mode: ModeConfig,
     pub diagnostics: Vec<Severity>,
     pub workspace_diagnostics: Vec<Severity>,
@@ -704,7 +722,6 @@ impl Default for StatusLineConfig {
                 E::Position,
                 E::FileEncoding,
             ],
-            separator: String::from("│"),
             mode: ModeConfig::default(),
             diagnostics: vec![Severity::Warning, Severity::Error],
             workspace_diagnostics: vec![Severity::Warning, Severity::Error],
@@ -932,14 +949,12 @@ impl std::str::FromStr for GutterType {
 #[serde(default)]
 pub struct WhitespaceConfig {
     pub render: WhitespaceRender,
-    pub characters: WhitespaceCharacters,
 }
 
 impl Default for WhitespaceConfig {
     fn default() -> Self {
         Self {
             render: WhitespaceRender::Basic(WhitespaceRenderValue::None),
-            characters: WhitespaceCharacters::default(),
         }
     }
 }
@@ -1066,35 +1081,12 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct WhitespaceCharacters {
-    pub space: char,
-    pub nbsp: char,
-    pub nnbsp: char,
-    pub tab: char,
-    pub tabpad: char,
-    pub newline: char,
-}
-
-impl Default for WhitespaceCharacters {
-    fn default() -> Self {
-        Self {
-            space: '·',   // U+00B7
-            nbsp: '⍽',    // U+237D
-            nnbsp: '␣',   // U+2423
-            tab: '→',     // U+2192
-            newline: '⏎', // U+23CE
-            tabpad: ' ',
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct IndentGuidesConfig {
     pub render: bool,
     pub character: char,
     pub skip_levels: u8,
+    pub rainbow: bool,
 }
 
 impl Default for IndentGuidesConfig {
@@ -1103,6 +1095,7 @@ impl Default for IndentGuidesConfig {
             skip_levels: 0,
             render: false,
             character: '│',
+            rainbow: false,
         }
     }
 }
@@ -1213,6 +1206,7 @@ impl Default for Config {
             rulers: Vec::new(),
             whitespace: WhitespaceConfig::default(),
             bufferline: BufferLine::default(),
+            breadcrumb: BreadcrumbConfig::default(),
             indent_guides: IndentGuidesConfig::default(),
             color_modes: false,
             soft_wrap: SoftWrap {
@@ -1299,10 +1293,10 @@ pub struct Editor {
     pub theme_loader: Arc<theme::Loader>,
     /// last_theme is used for theme previews. We store the current theme here,
     /// and if previewing is cancelled, we can return to it.
-    pub last_theme: Option<Theme>,
+    pub last_theme: Option<Arc<Theme>>,
     /// The currently applied editor theme. While previewing a theme, the previewed theme
     /// is set here.
-    pub theme: Theme,
+    pub theme: Arc<Theme>,
 
     /// The primary Selection prior to starting a goto_line_number preview. This is
     /// restored when the preview is aborted, or added to the jumplist when it is
@@ -1437,7 +1431,7 @@ impl Editor {
             selected_register: None,
             macro_recording: None,
             macro_replaying: Vec::new(),
-            theme: theme_loader.default(),
+            theme: Arc::from(theme_loader.default()),
             language_servers,
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),
@@ -1578,15 +1572,15 @@ impl Editor {
         Ok(())
     }
 
-    pub fn set_theme_preview(&mut self, theme: Theme) -> anyhow::Result<()> {
+    pub fn set_theme_preview(&mut self, theme: Arc<Theme>) -> anyhow::Result<()> {
         self.set_theme_impl(theme, ThemeAction::Preview)
     }
 
-    pub fn set_theme(&mut self, theme: Theme) -> anyhow::Result<()> {
+    pub fn set_theme(&mut self, theme: Arc<Theme>) -> anyhow::Result<()> {
         self.set_theme_impl(theme, ThemeAction::Set)
     }
 
-    fn set_theme_impl(&mut self, theme: Theme, preview: ThemeAction) -> anyhow::Result<()> {
+    fn set_theme_impl(&mut self, theme: Arc<Theme>, preview: ThemeAction) -> anyhow::Result<()> {
         // `ui.selection` is the only scope required to be able to render a theme.
         if theme.find_highlight_exact("ui.selection").is_none() {
             bail!("Invalid theme: `ui.selection` required");
@@ -1598,7 +1592,7 @@ impl Editor {
         match preview {
             ThemeAction::Preview => {
                 let last_theme = std::mem::replace(&mut self.theme, theme);
-                // only insert on first preview: this will be the last theme the user has saved
+                // Only insert on first preview: this will be the last theme the user has saved
                 self.last_theme.get_or_insert(last_theme);
             }
             ThemeAction::Set => {
@@ -1810,6 +1804,7 @@ impl Editor {
         let diagnostics = Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, doc);
         doc.replace_diagnostics(diagnostics, &[], None);
         doc.reset_all_inlay_hints();
+        doc.clear_document_symbols();
     }
 
     /// Launch a language server for a given document

@@ -200,6 +200,12 @@ impl Rect {
         }
     }
 
+    #[inline]
+    pub fn with_y(self, y: u16) -> Rect {
+        // new y may make area > u16::max_value, so use new()
+        Self::new(self.x, y, self.width, self.height)
+    }
+
     pub fn with_height(self, height: u16) -> Rect {
         // new height may make area > u16::max_value, so use new()
         Self::new(self.x, self.y, self.width, height)
@@ -748,6 +754,20 @@ impl Style {
         self.sub_modifier.insert(other.sub_modifier);
 
         self
+    }
+}
+
+impl From<Color> for Style {
+    #[inline]
+    fn from(color: Color) -> Self {
+        Self::new().fg(color)
+    }
+}
+
+impl From<Option<Color>> for Style {
+    #[inline]
+    fn from(color: Option<Color>) -> Self {
+        color.map_or_else(Self::default, |color| Self::new().fg(color))
     }
 }
 

@@ -1,0 +1,4703 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 3a8bfd9a4648..c4261ad3b7e0 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -57,7 +57,10 @@ sonic-rs = "0.5"
+ globset = "0.4"
+ etcetera = "0.11"
+ arc-swap = "1.9"
+-arrayvec = "0.7"
++arrayvec =  { version =  "0.7", features = ["serde"] }
++hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
++smartstring = { version = "1", features = ["serde"]}
++serde  = { version = "1", features = ["derive"] }
+ 
+ # dev dependencies
+ criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+diff --git a/helix-core/Cargo.toml b/helix-core/Cargo.toml
+index e0bdf67a1859..6463e597e12a 100644
+--- a/helix-core/Cargo.toml
++++ b/helix-core/Cargo.toml
+@@ -22,7 +22,7 @@ helix-parsec = { path = "../helix-parsec" }
+ 
+ ropey.workspace = true
+ smallvec = "1.15"
+-smartstring = "1.0.1"
++smartstring.workspace = true
+ unicode-segmentation.workspace = true
+ # unicode-width is changing width definitions
+ # that both break our logic and disagree with common
+diff --git a/helix-core/src/doc_formatter.rs b/helix-core/src/doc_formatter.rs
+index 1c3bfec76a6f..9d6078d8d42f 100644
+--- a/helix-core/src/doc_formatter.rs
++++ b/helix-core/src/doc_formatter.rs
+@@ -17,6 +17,7 @@ use std::mem::replace;
+ #[cfg(test)]
+ mod test;
+ 
++use helix_stdx::string::StackString;
+ use unicode_segmentation::{Graphemes, UnicodeSegmentation};
+ 
+ use helix_stdx::rope::{RopeGraphemes, RopeSliceExt};
+@@ -147,7 +148,7 @@ pub struct TextFormat {
+     pub tab_width: u16,
+     pub max_wrap: u16,
+     pub max_indent_retain: u16,
+-    pub wrap_indicator: Box<str>,
++    pub wrap_indicator: StackString,
+     pub wrap_indicator_highlight: Option<Highlight>,
+     pub viewport_width: u16,
+     pub soft_wrap_at_text_width: bool,
+@@ -161,7 +162,7 @@ impl Default for TextFormat {
+             tab_width: 4,
+             max_wrap: 3,
+             max_indent_retain: 4,
+-            wrap_indicator: Box::from(" "),
++            wrap_indicator: StackString::from(" "),
+             viewport_width: 17,
+             wrap_indicator_highlight: None,
+             soft_wrap_at_text_width: false,
+diff --git a/helix-core/src/doc_formatter/test.rs b/helix-core/src/doc_formatter/test.rs
+index 21be2e535df4..c6789fafef3b 100644
+--- a/helix-core/src/doc_formatter/test.rs
++++ b/helix-core/src/doc_formatter/test.rs
+@@ -1,3 +1,5 @@
++use helix_stdx::string::StackString;
++
+ use crate::doc_formatter::{DocumentFormatter, TextFormat};
+ use crate::text_annotations::{InlineAnnotation, Overlay, TextAnnotations};
+ 
+@@ -8,7 +10,7 @@ impl TextFormat {
+             tab_width: 2,
+             max_wrap: 3,
+             max_indent_retain: 4,
+-            wrap_indicator: ".".into(),
++            wrap_indicator: StackString::from("."),
+             wrap_indicator_highlight: None,
+             // use a prime number to allow lining up too often with repeat
+             viewport_width: 17,
+diff --git a/helix-lsp-types/src/completion.rs b/helix-lsp-types/src/completion.rs
+index 7c006bdb62ad..f3760935b397 100644
+--- a/helix-lsp-types/src/completion.rs
++++ b/helix-lsp-types/src/completion.rs
+@@ -1,7 +1,7 @@
+ use serde::{Deserialize, Serialize};
+ 
+ use crate::{
+-    Command, Documentation, MarkupKind, PartialResultParams, TagSupport,
++    Command, Documentation, MarkupKind, PartialResultParams, SymbolKind, TagSupport,
+     TextDocumentPositionParams, TextDocumentRegistrationOptions, TextEdit, WorkDoneProgressOptions,
+     WorkDoneProgressParams,
+ };
+@@ -55,6 +55,41 @@ impl CompletionItemKind {
+ }
+ }
+ 
++impl CompletionItemKind {
++    #[inline]
++    #[must_use]
++    pub const fn as_str(self) -> &'static str {
++        match self {
++            Self::TEXT => "text",
++            Self::METHOD => SymbolKind::METHOD.as_str(),
++            Self::FUNCTION => SymbolKind::FUNCTION.as_str(),
++            Self::CONSTRUCTOR => SymbolKind::CONSTRUCTOR.as_str(),
++            Self::FIELD => SymbolKind::FIELD.as_str(),
++            Self::VARIABLE => SymbolKind::VARIABLE.as_str(),
++            Self::CLASS => SymbolKind::CLASS.as_str(),
++            Self::INTERFACE => SymbolKind::INTERFACE.as_str(),
++            Self::MODULE => SymbolKind::MODULE.as_str(),
++            Self::PROPERTY => SymbolKind::PROPERTY.as_str(),
++            Self::UNIT => "unit",
++            Self::VALUE => "value",
++            Self::ENUM => SymbolKind::ENUM.as_str(),
++            Self::KEYWORD => "keyword",
++            Self::SNIPPET => "snippet",
++            Self::COLOR => "color",
++            Self::FILE => SymbolKind::FILE.as_str(),
++            Self::REFERENCE => "reference",
++            Self::FOLDER => "folder",
++            Self::ENUM_MEMBER => SymbolKind::ENUM_MEMBER.as_str(),
++            Self::CONSTANT => SymbolKind::CONSTANT.as_str(),
++            Self::STRUCT => SymbolKind::STRUCT.as_str(),
++            Self::EVENT => SymbolKind::EVENT.as_str(),
++            Self::OPERATOR => SymbolKind::OPERATOR.as_str(),
++            Self::TYPE_PARAMETER => SymbolKind::TYPE_PARAMETER.as_str(),
++            _ => "",
++        }
++    }
++}
++
+ #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
+ #[serde(rename_all = "camelCase")]
+ pub struct CompletionItemCapability {
+diff --git a/helix-lsp-types/src/lib.rs b/helix-lsp-types/src/lib.rs
+index afba1f2c70f8..0c233743f2ad 100644
+--- a/helix-lsp-types/src/lib.rs
++++ b/helix-lsp-types/src/lib.rs
+@@ -1279,6 +1279,42 @@ impl SymbolKind {
+     }
+ }
+ 
++impl SymbolKind {
++    #[inline]
++    #[must_use]
++    pub const fn as_str(self) -> &'static str {
++        match self {
++            Self::FILE => "file",
++            Self::MODULE => "module",
++            Self::NAMESPACE => "namespace",
++            Self::PACKAGE => "package",
++            Self::CLASS => "class",
++            Self::METHOD => "method",
++            Self::PROPERTY => "property",
++            Self::FIELD => "field",
++            Self::CONSTRUCTOR => "construct",
++            Self::ENUM => "enum",
++            Self::INTERFACE => "interface",
++            Self::FUNCTION => "function",
++            Self::VARIABLE => "variable",
++            Self::CONSTANT => "constant",
++            Self::STRING => "string",
++            Self::NUMBER => "number",
++            Self::BOOLEAN => "boolean",
++            Self::ARRAY => "array",
++            Self::OBJECT => "object",
++            Self::KEY => "key",
++            Self::NULL => "null",
++            Self::ENUM_MEMBER => "enum_member",
++            Self::STRUCT => "struct",
++            Self::EVENT => "event",
++            Self::OPERATOR => "operator",
++            Self::TYPE_PARAMETER => "type_param",
++            _ => "",
++        }
++    }
++}
++
+ /// Specific capabilities for the `SymbolKind` in the `workspace/symbol` request.
+ #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
+ #[serde(rename_all = "camelCase")]
+diff --git a/helix-stdx/Cargo.toml b/helix-stdx/Cargo.toml
+index 8a8629303e6b..bb39a9b88bfb 100644
+--- a/helix-stdx/Cargo.toml
++++ b/helix-stdx/Cargo.toml
+@@ -21,8 +21,10 @@ bitflags.workspace = true
+ once_cell = "1.21"
+ regex-automata = "0.4.14"
+ unicode-segmentation.workspace = true
+-serde = { version = "1.0", features = ["derive"] }
++serde.workspace = true
+ percent-encoding = "2.3"
++smartstring.workspace = true
++arrayvec.workspace = true
+ 
+ [target.'cfg(windows)'.dependencies]
+ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+diff --git a/helix-stdx/src/lib.rs b/helix-stdx/src/lib.rs
+index aa2180359000..9cdd5cdfc5ef 100644
+--- a/helix-stdx/src/lib.rs
++++ b/helix-stdx/src/lib.rs
+@@ -6,6 +6,7 @@ pub mod faccess;
+ pub mod path;
+ pub mod range;
+ pub mod rope;
++pub mod string;
+ pub mod uri;
+ 
+ pub use range::Range;
+diff --git a/helix-stdx/src/path.rs b/helix-stdx/src/path.rs
+index 740f7bcb51d9..a1ca9d23fb56 100644
+--- a/helix-stdx/src/path.rs
++++ b/helix-stdx/src/path.rs
+@@ -220,7 +220,7 @@ fn path_component_regex(windows: bool) -> String {
+ 
+ /// Regex for delimited environment captures like `${HOME}`.
+ fn braced_env_regex(windows: bool) -> String {
+-    r"\$\{(?:".to_owned() + &path_component_regex(windows) + r"|[/:=])+\}"
++    r"\$\{(?:".to_owned() + path_component_regex(windows).as_str() + r"|[/:=])+\}"
+ }
+ 
+ fn compile_path_regex(
+diff --git a/helix-stdx/src/string.rs b/helix-stdx/src/string.rs
+new file mode 100644
+index 000000000000..346e7182c20d
+--- /dev/null
++++ b/helix-stdx/src/string.rs
+@@ -0,0 +1,2 @@
++mod stack;
++pub use stack::{CapacityError, StackString};
+diff --git a/helix-stdx/src/string/stack.rs b/helix-stdx/src/string/stack.rs
+new file mode 100644
+index 000000000000..3f5ef44abcf9
+--- /dev/null
++++ b/helix-stdx/src/string/stack.rs
+@@ -0,0 +1,168 @@
++use serde::{Deserialize, Serialize};
++use smartstring::{SmartString, SmartStringMode};
++use std::{
++    borrow::{Borrow, Cow},
++    error::Error,
++    fmt::Display,
++    ops::Deref,
++};
++
++use arrayvec::ArrayString;
++
++const INLINE: usize = 28;
++
++/// String type that stores at most 28 bytes inline.
++#[repr(transparent)]
++#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq, Deserialize, Serialize)]
++pub struct StackString(ArrayString<INLINE>);
++
++impl StackString {
++    #[inline]
++    #[must_use]
++    pub const fn new() -> Self {
++        const { assert!(size_of::<Self>() == 32) }
++        Self(ArrayString::new_const())
++    }
++
++    #[inline]
++    pub fn clear(&mut self) {
++        self.0.clear();
++    }
++
++    #[inline]
++    pub fn push(&mut self, c: char) {
++        self.0.push(c);
++    }
++
++    #[inline]
++    pub fn try_push(&mut self, c: char) -> Result<(), CapacityError> {
++        self.0.try_push(c).map_err(|_| CapacityError)
++    }
++
++    #[inline]
++    pub fn push_str(&mut self, s: &str) {
++        self.0.push_str(s);
++    }
++
++    #[inline]
++    pub fn try_push_str(&mut self, s: &str) -> Result<(), CapacityError> {
++        self.0.try_push_str(s).map_err(|_| CapacityError)
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn as_str(&self) -> &str {
++        self.0.as_str()
++    }
++
++    /// Only meant to be used with compile-time known strings.
++    ///
++    /// For runtime known use `try_from`.
++    ///
++    /// # Panics
++    ///
++    /// Panics if `s.len()` > `28`.
++    #[inline]
++    #[must_use]
++    pub fn from(s: &'static str) -> Self {
++        assert!(s.len() <= INLINE, "`StackString` can only be used with `&str` that is at most {INLINE} bytes: {s} is too large");
++        Self(ArrayString::from(s).unwrap())
++    }
++}
++
++impl Deref for StackString {
++    type Target = str;
++
++    #[inline]
++    fn deref(&self) -> &Self::Target {
++        self.0.as_str()
++    }
++}
++
++impl Display for StackString {
++    #[inline]
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        self.0.fmt(f)
++    }
++}
++
++impl Borrow<str> for StackString {
++    #[inline]
++    fn borrow(&self) -> &str {
++        self.0.as_str()
++    }
++}
++
++impl TryFrom<&str> for StackString {
++    type Error = CapacityError;
++
++    #[inline]
++    fn try_from(s: &str) -> Result<Self, Self::Error> {
++        Ok(Self(ArrayString::from(s).map_err(|_| CapacityError)?))
++    }
++}
++
++impl AsRef<str> for StackString {
++    #[inline]
++    fn as_ref(&self) -> &str {
++        &self.0
++    }
++}
++
++impl std::fmt::Write for StackString {
++    #[inline]
++    fn write_str(&mut self, s: &str) -> std::fmt::Result {
++        self.try_push_str(s).map_err(|_| std::fmt::Error)
++    }
++}
++
++#[macro_export]
++macro_rules! stack_format {
++    ($($arg:tt)*) => {{
++        use std::fmt::Write;
++        let mut s = $crate::string::StackString::new();
++        match write!(&mut s, $($arg)*) {
++            Ok(_) => s,
++            Err(_) => panic!("`stack_format!` exceeded capacity of 28 bytes"),
++        }
++    }};
++}
++
++#[derive(Debug)]
++pub struct CapacityError;
++impl Error for CapacityError {}
++impl Display for CapacityError {
++    #[inline]
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(
++            f,
++            "CapacityError: not enough capacity to hold string data in `ArrayString`"
++        )
++    }
++}
++
++impl From<StackString> for Cow<'_, str> {
++    #[inline]
++    fn from(s: StackString) -> Self {
++        Cow::Owned(s.to_string())
++    }
++}
++
++impl<T: SmartStringMode> From<StackString> for SmartString<T> {
++    #[inline]
++    fn from(s: StackString) -> Self {
++        Self::from(s.as_str())
++    }
++}
++
++impl PartialEq<str> for StackString {
++    fn eq(&self, other: &str) -> bool {
++        *self.0 == *other
++    }
++}
++
++impl PartialEq<&str> for StackString {
++    fn eq(&self, other: &&str) -> bool {
++        *self.0 == **other
++    }
++}
+diff --git a/helix-term/src/application.rs b/helix-term/src/application.rs
+index 9aa4b2c4f657..dde5163081bf 100644
+--- a/helix-term/src/application.rs
++++ b/helix-term/src/application.rs
+@@ -502,7 +502,7 @@ impl Application {
+                     })
+             })
+             .unwrap_or_else(|| editor.theme_loader.default_theme(true_color));
+-        let _ = editor.set_theme(theme);
++        let _ = editor.set_theme(Arc::from(theme));
+     }
+ 
+     #[cfg(windows)]
+diff --git a/helix-term/src/commands.rs b/helix-term/src/commands.rs
+index 5d63cdd3057a..c3a485808ada 100644
+--- a/helix-term/src/commands.rs
++++ b/helix-term/src/commands.rs
+@@ -48,17 +48,18 @@ use helix_view::{
+     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
+     editor::{Action, Motion},
+     expansion,
++    icons::{Icons, ICONS},
+     info::Info,
+     input::KeyEvent,
+     keyboard::KeyCode,
+     theme::Style,
+     tree,
+     view::View,
+-    Document, DocumentId, Editor, ViewId,
++    Document, DocumentId, Editor, Theme, ViewId,
+ };
+ 
+ use anyhow::{anyhow, bail, ensure, Context as _};
+-use arc_swap::access::DynAccess;
++use arc_swap::access::{DynAccess, DynGuard};
+ use insert::*;
+ use movement::Movement;
+ 
+@@ -79,6 +80,7 @@ use std::{
+     future::Future,
+     io::Read,
+     num::NonZeroUsize,
++    sync::Arc,
+ };
+ 
+ use std::{
+@@ -2561,6 +2563,7 @@ fn make_search_word_bounded(cx: &mut Context) {
+     }
+ }
+ 
++#[allow(clippy::too_many_lines)]
+ fn global_search(cx: &mut Context) {
+     #[derive(Debug)]
+     struct FileResult<'a> {
+@@ -2584,21 +2587,54 @@ fn global_search(cx: &mut Context) {
+     struct GlobalSearchConfig {
+         smart_case: bool,
+         file_picker_config: helix_view::editor::FilePickerConfig,
+-        style: PathStyleConfig,
++        theme: Arc<Theme>,
+     }
+ 
+     let config = cx.editor.config();
+     let config = GlobalSearchConfig {
+         smart_case: config.search.smart_case,
+         file_picker_config: config.file_picker.clone(),
+-        style: PathStyleConfig::new(&cx.editor.theme),
++        theme: cx.editor.theme.clone(),
+     };
+ 
+     let columns = [
+         PickerColumn::new("path", |item: &FileResult, config: &GlobalSearchConfig| {
+-            config
+-                .style
+-                .stylize(Some(&item.path), Some(item.line_start))
++            let theme = config.theme.as_ref();
++
++            let path = helix_stdx::path::get_relative_path(item.path.as_ref());
++
++            let directories = path
++                .parent()
++                .filter(|p| !p.as_os_str().is_empty())
++                .map(|p| format!("{}{}", p.display(), std::path::MAIN_SEPARATOR))
++                .unwrap_or_default();
++
++            let filename = item
++                .path
++                .file_name()
++                .expect("global search paths are normalized (can't end in `..`)")
++                .to_string_lossy();
++
++            let mut line = Vec::with_capacity(5);
++
++            let icons: DynGuard<Icons> = ICONS.load();
++
++            if let Some(file) = icons.fs().file() {
++                let icon = file.get_with_style_or_default(path, theme);
++                line.push(Span::from(icon));
++            }
++
++            line.extend_from_slice(&[
++                Span::styled(directories, theme.get("ui.text.directory")),
++                Span::raw(filename),
++                Span::styled(":", theme.get("punctuation")),
++                Span::styled(
++                    (item.line_start + 1).to_string(),
++                    theme.get("constant.numeric.integer"),
++                ),
++            ]);
++
++            Cell::from(Spans::from(line))
+         }),
+         PickerColumn::hidden("contents"),
+     ];
+@@ -3266,51 +3302,8 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
+     }
+ }
+ 
+-struct PathStyleConfig {
+-    directory_style: Style,
+-    number_style: Style,
+-    colon_style: Style,
+-}
+-
+-impl PathStyleConfig {
+-    fn new(theme: &helix_view::Theme) -> Self {
+-        Self {
+-            directory_style: theme.get("ui.text.directory"),
+-            number_style: theme.get("constant.numeric.integer"),
+-            colon_style: theme.get("punctuation"),
+-        }
+-    }
+-
+-    fn stylize<'a>(&self, path: Option<&'a Path>, line: Option<usize>) -> Cell<'a> {
+-        let mut spans = Vec::new();
+-        if let Some(path) = path {
+-            let directories = path
+-                .parent()
+-                .filter(|p| !p.as_os_str().is_empty())
+-                .map(|p| format!("{}{}", p.display(), std::path::MAIN_SEPARATOR))
+-                .unwrap_or_default();
+-            spans.push(Span::styled(directories, self.directory_style));
+-        }
+-        let filename = path.as_ref().map_or(SCRATCH_BUFFER_NAME.into(), |path| {
+-            path.file_name()
+-                .expect("all document names are normalized (can't end in `..`)")
+-                .to_string_lossy()
+-        });
+-        spans.push(Span::raw(filename));
+-        if let Some(line) = line {
+-            spans.extend([
+-                Span::styled(":", self.colon_style),
+-                Span::styled((line + 1).to_string(), self.number_style),
+-            ]);
+-        }
+-
+-        Cell::from(Spans::from(spans))
+-    }
+-}
+-
++#[allow(clippy::too_many_lines)]
+ fn buffer_picker(cx: &mut Context) {
+-    let current = view!(cx.editor).doc;
+-
+     struct BufferMeta<'a> {
+         id: DocumentId,
+         path: Option<Cow<'a, Path>>,
+@@ -3319,6 +3312,8 @@ fn buffer_picker(cx: &mut Context) {
+         focused_at: std::time::Instant,
+     }
+ 
++    let current = view!(cx.editor).doc;
++
+     let new_meta = |doc: &Document| BufferMeta {
+         id: doc.id(),
+         path: doc
+@@ -3352,8 +3347,31 @@ fn buffer_picker(cx: &mut Context) {
+             }
+             flags.into()
+         }),
+-        PickerColumn::new("path", |meta: &BufferMeta, config: &PathStyleConfig| {
+-            config.stylize(meta.path.as_deref(), None)
++        PickerColumn::new("path", |meta: &BufferMeta, theme: &Arc<Theme>| {
++            let path = meta
++                .path
++                .as_deref()
++                .map(helix_stdx::path::get_relative_path);
++
++            let name = path
++                .as_deref()
++                .and_then(Path::to_str)
++                .unwrap_or(SCRATCH_BUFFER_NAME);
++
++            let mut line = Vec::with_capacity(2);
++
++            let icons: DynGuard<Icons> = ICONS.load();
++
++            if let Some(file) = icons.fs().file() {
++                if let Some(path) = meta.path.as_ref() {
++                    let icon = file.get_with_style_or_default(path, theme);
++                    line.push(Span::from(icon));
++                }
++            }
++
++            line.push(Span::raw(name.to_string()));
++
++            Cell::from(Spans::from(line))
+         }),
+     ];
+ 
+@@ -3374,7 +3392,7 @@ fn buffer_picker(cx: &mut Context) {
+         columns,
+         2,
+         items,
+-        PathStyleConfig::new(&cx.editor.theme),
++        cx.editor.theme.clone(),
+         |cx, meta, action| {
+             cx.editor.switch(meta.id, action);
+         },
+@@ -3388,9 +3406,11 @@ fn buffer_picker(cx: &mut Context) {
+         });
+         Some((meta.id.into(), lines))
+     });
++
+     cx.push_layer(Box::new(overlaid(picker)));
+ }
+ 
++#[allow(clippy::too_many_lines)]
+ fn jumplist_picker(cx: &mut Context) {
+     struct JumpMeta<'a> {
+         id: DocumentId,
+@@ -3433,8 +3453,39 @@ fn jumplist_picker(cx: &mut Context) {
+ 
+     let columns = [
+         ui::PickerColumn::new("id", |item: &JumpMeta, _| item.id.to_string().into()),
+-        ui::PickerColumn::new("path", |item: &JumpMeta, config: &PathStyleConfig| {
+-            config.stylize(item.path.as_deref(), Some(item.line_start))
++        ui::PickerColumn::new("path", |meta: &JumpMeta, theme: &Arc<Theme>| {
++            let path = meta
++                .path
++                .as_deref()
++                .map(helix_stdx::path::get_relative_path);
++
++            let name = path
++                .as_deref()
++                .and_then(Path::to_str)
++                .unwrap_or(SCRATCH_BUFFER_NAME);
++
++            let mut line = Vec::with_capacity(2);
++
++            let icons: DynGuard<Icons> = ICONS.load();
++
++            if let Some(file) = icons.fs().file() {
++                if let Some(path) = meta.path.as_ref() {
++                    let icon = file.get_with_style_or_default(path, theme);
++                    line.push(Span::from(icon));
++                }
++            }
++
++            line.push(Span::raw(name.to_string()));
++
++            line.extend([
++                Span::styled(":", theme.get("punctuation")),
++                Span::styled(
++                    (meta.line_start + 1).to_string(),
++                    theme.get("constant.numeric.integer"),
++                ),
++            ]);
++
++            Cell::from(Spans::from(line))
+         }),
+         ui::PickerColumn::new("flags", |item: &JumpMeta, _| {
+             let mut flags = Vec::new();
+@@ -3460,7 +3511,7 @@ fn jumplist_picker(cx: &mut Context) {
+                 .rev()
+                 .map(|(doc_id, selection)| new_meta(view, *doc_id, selection.clone()))
+         }),
+-        PathStyleConfig::new(&cx.editor.theme),
++        cx.editor.theme.clone(),
+         |cx, meta, action| {
+             cx.editor.switch(meta.id, action);
+             let config = cx.editor.config();
+@@ -3479,6 +3530,7 @@ fn jumplist_picker(cx: &mut Context) {
+     cx.push_layer(Box::new(overlaid(picker)));
+ }
+ 
++#[allow(clippy::too_many_lines)]
+ fn changed_file_picker(cx: &mut Context) {
+     pub struct FileChangeData {
+         cwd: PathBuf,
+@@ -3504,14 +3556,47 @@ fn changed_file_picker(cx: &mut Context) {
+ 
+     let columns = [
+         PickerColumn::new("change", |change: &FileChange, data: &FileChangeData| {
+-            match change {
+-                FileChange::Untracked { .. } => Span::styled("+ untracked", data.style_untracked),
+-                FileChange::Modified { .. } => Span::styled("~ modified", data.style_modified),
+-                FileChange::Conflict { .. } => Span::styled("x conflict", data.style_conflict),
+-                FileChange::Deleted { .. } => Span::styled("- deleted", data.style_deleted),
+-                FileChange::Renamed { .. } => Span::styled("> renamed", data.style_renamed),
+-            }
+-            .into()
++            let icons: DynGuard<Icons> = ICONS.load();
++
++            let span = match change {
++                FileChange::Untracked { .. } => Span::styled(
++                    match icons.vcs().added() {
++                        Some(icon) => Cow::from(format!("{icon}untracked")),
++                        None => Cow::from("untracked"),
++                    },
++                    data.style_untracked,
++                ),
++                FileChange::Modified { .. } => Span::styled(
++                    match icons.vcs().modified() {
++                        Some(icon) => Cow::from(format!("{icon}modified")),
++                        None => Cow::from("modified"),
++                    },
++                    data.style_modified,
++                ),
++                FileChange::Conflict { .. } => Span::styled(
++                    match icons.vcs().conflict() {
++                        Some(icon) => Cow::from(format!("{icon}conflict")),
++                        None => Cow::from("conflict"),
++                    },
++                    data.style_conflict,
++                ),
++                FileChange::Deleted { .. } => Span::styled(
++                    match icons.vcs().removed() {
++                        Some(icon) => Cow::from(format!("{icon}deleted")),
++                        None => Cow::from("deleted"),
++                    },
++                    data.style_deleted,
++                ),
++                FileChange::Renamed { .. } => Span::styled(
++                    match icons.vcs().renamed() {
++                        Some(icon) => Cow::from(format!("{icon}renamed")),
++                        None => Cow::from("renamed"),
++                    },
++                    data.style_renamed,
++                ),
++            };
++
++            Cell::from(span)
+         }),
+         PickerColumn::new("path", |change: &FileChange, data: &FileChangeData| {
+             let display_path = |path: &PathBuf| {
+@@ -3520,7 +3605,8 @@ fn changed_file_picker(cx: &mut Context) {
+                     .display()
+                     .to_string()
+             };
+-            match change {
++
++            let path = match change {
+                 FileChange::Untracked { path } => display_path(path),
+                 FileChange::Modified { path } => display_path(path),
+                 FileChange::Conflict { path } => display_path(path),
+@@ -3528,8 +3614,9 @@ fn changed_file_picker(cx: &mut Context) {
+                 FileChange::Renamed { from_path, to_path } => {
+                     format!("{} -> {}", display_path(from_path), display_path(to_path))
+                 }
+-            }
+-            .into()
++            };
++
++            Cell::from(path)
+         }),
+     ];
+ 
+@@ -3558,6 +3645,7 @@ fn changed_file_picker(cx: &mut Context) {
+         },
+     )
+     .with_preview(|_editor, meta| Some((meta.path().into(), None)));
++
+     let injector = picker.injector();
+ 
+     let trust_full = cx
+@@ -3578,6 +3666,7 @@ fn changed_file_picker(cx: &mut Context) {
+                 true
+             }
+         });
++
+     cx.push_layer(Box::new(overlaid(picker)));
+ }
+ 
+diff --git a/helix-term/src/commands/lsp.rs b/helix-term/src/commands/lsp.rs
+index cd95a69d3816..67124f2d19f8 100644
+--- a/helix-term/src/commands/lsp.rs
++++ b/helix-term/src/commands/lsp.rs
+@@ -9,7 +9,10 @@ use helix_lsp::{
+     Client, LanguageServerId, OffsetEncoding,
+ };
+ use tokio_stream::StreamExt;
+-use tui::{text::Span, widgets::Row};
++use tui::{
++    text::{Span, Spans},
++    widgets::{Cell, Row},
++};
+ 
+ use super::{align_view, push_jump, Align, Context, Editor};
+ 
+@@ -17,14 +20,15 @@ use helix_core::{
+     diagnostic::DiagnosticProvider, syntax::config::LanguageServerFeature,
+     text_annotations::InlineAnnotation, Selection, Uri,
+ };
+-use helix_stdx::path;
++use helix_stdx::{path, stack_format};
+ use helix_view::{
+     action::Action as CodeActionItem,
+     document::{DocumentInlayHints, DocumentInlayHintsId},
+     editor::Action,
+     handlers::lsp::SignatureHelpInvoked,
++    icons::ICONS,
+     theme::Style,
+-    Document, DocumentId, View,
++    Document, DocumentId, Theme, View,
+ };
+ 
+ use crate::{
+@@ -38,6 +42,7 @@ use std::{
+     fmt::Display,
+     future::Future,
+     path::Path,
++    sync::Arc,
+ };
+ 
+ /// Gets the first language server that is attached to a document which supports a specific feature.
+@@ -165,41 +170,6 @@ fn jump_to_position(
+     }
+ }
+ 
+-fn display_symbol_kind(kind: lsp::SymbolKind) -> &'static str {
+-    match kind {
+-        lsp::SymbolKind::FILE => "file",
+-        lsp::SymbolKind::MODULE => "module",
+-        lsp::SymbolKind::NAMESPACE => "namespace",
+-        lsp::SymbolKind::PACKAGE => "package",
+-        lsp::SymbolKind::CLASS => "class",
+-        lsp::SymbolKind::METHOD => "method",
+-        lsp::SymbolKind::PROPERTY => "property",
+-        lsp::SymbolKind::FIELD => "field",
+-        lsp::SymbolKind::CONSTRUCTOR => "construct",
+-        lsp::SymbolKind::ENUM => "enum",
+-        lsp::SymbolKind::INTERFACE => "interface",
+-        lsp::SymbolKind::FUNCTION => "function",
+-        lsp::SymbolKind::VARIABLE => "variable",
+-        lsp::SymbolKind::CONSTANT => "constant",
+-        lsp::SymbolKind::STRING => "string",
+-        lsp::SymbolKind::NUMBER => "number",
+-        lsp::SymbolKind::BOOLEAN => "boolean",
+-        lsp::SymbolKind::ARRAY => "array",
+-        lsp::SymbolKind::OBJECT => "object",
+-        lsp::SymbolKind::KEY => "key",
+-        lsp::SymbolKind::NULL => "null",
+-        lsp::SymbolKind::ENUM_MEMBER => "enummem",
+-        lsp::SymbolKind::STRUCT => "struct",
+-        lsp::SymbolKind::EVENT => "event",
+-        lsp::SymbolKind::OPERATOR => "operator",
+-        lsp::SymbolKind::TYPE_PARAMETER => "typeparam",
+-        _ => {
+-            log::warn!("Unknown symbol kind: {:?}", kind);
+-            ""
+-        }
+-    }
+-}
+-
+ #[derive(Copy, Clone, PartialEq)]
+ enum DiagnosticsFormat {
+     ShowSourcePath,
+@@ -255,11 +225,21 @@ fn diag_picker(
+         ui::PickerColumn::new(
+             "severity",
+             |item: &PickerDiagnostic, styles: &DiagnosticStyles| {
++                let icons = ICONS.load();
+                 match item.diag.severity {
+-                    Some(DiagnosticSeverity::HINT) => Span::styled("HINT", styles.hint),
+-                    Some(DiagnosticSeverity::INFORMATION) => Span::styled("INFO", styles.info),
+-                    Some(DiagnosticSeverity::WARNING) => Span::styled("WARN", styles.warning),
+-                    Some(DiagnosticSeverity::ERROR) => Span::styled("ERROR", styles.error),
++                    Some(DiagnosticSeverity::WARNING) => Span::styled(
++                        format!("{}WARN", icons.diagnostic().warning()),
++                        styles.warning,
++                    ),
++                    Some(DiagnosticSeverity::ERROR) => {
++                        Span::styled(format!("{}ERROR", icons.diagnostic().error()), styles.error)
++                    }
++                    Some(DiagnosticSeverity::HINT) => {
++                        Span::styled(format!("{}HINT", icons.diagnostic().hint()), styles.hint)
++                    }
++                    Some(DiagnosticSeverity::INFORMATION) => {
++                        Span::styled(format!("{}INFO", icons.diagnostic().info()), styles.info)
++                    }
+                     _ => Span::raw(""),
+                 }
+                 .into()
+@@ -315,6 +295,7 @@ fn diag_picker(
+     .truncate_start(false)
+ }
+ 
++#[allow(clippy::too_many_lines)]
+ pub fn symbol_picker(cx: &mut Context) {
+     fn nested_to_flat(
+         list: &mut Vec<SymbolInformationItem>,
+@@ -404,17 +385,38 @@ pub fn symbol_picker(cx: &mut Context) {
+ 
+     cx.jobs.callback(async move {
+         let mut symbols = Vec::new();
++
+         while let Some(response) = futures.next().await {
+             match response {
+                 Ok(mut items) => symbols.append(&mut items),
+                 Err(err) => log::error!("Error requesting document symbols: {err}"),
+             }
+         }
+-        let call = move |_editor: &mut Editor, compositor: &mut Compositor| {
++
++        let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+             let columns = [
+-                ui::PickerColumn::new("kind", |item: &SymbolInformationItem, _| {
+-                    display_symbol_kind(item.symbol.kind).into()
+-                }),
++                ui::PickerColumn::new(
++                    "kind",
++                    |item: &SymbolInformationItem, theme: &Arc<Theme>| {
++                        let name = item.symbol.kind.as_str();
++                        let icons = ICONS.load();
++
++                        let mut line = Vec::new();
++
++                        if let Some(icon) = icons.kind().get(name) {
++                            line.push(Span::styled(
++                                icon.to_string(),
++                                theme
++                                    .try_get_exact(&stack_format!("icons.kind.{name}"))
++                                    .unwrap_or_else(|| icon.style()),
++                            ));
++                        }
++
++                        line.push(Span::raw(name));
++
++                        Cell::from(Spans::from(line))
++                    },
++                ),
+                 // Some symbols in the document symbol picker may have a URI that isn't
+                 // the current file. It should be rare though, so we concatenate that
+                 // URI in with the symbol name in this picker.
+@@ -434,7 +436,7 @@ pub fn symbol_picker(cx: &mut Context) {
+                 columns,
+                 1, // name column
+                 symbols,
+-                (),
++                editor.theme.clone(),
+                 move |cx, item, action| {
+                     jump_to_location(cx.editor, &item.location, action);
+                 },
+@@ -449,10 +451,12 @@ pub fn symbol_picker(cx: &mut Context) {
+     });
+ }
+ 
++#[allow(clippy::too_many_lines)]
+ pub fn workspace_symbol_picker(cx: &mut Context) {
+     use crate::ui::picker::Injector;
+ 
+     let doc = doc!(cx.editor);
++
+     if doc
+         .language_servers_with_feature(LanguageServerFeature::WorkspaceSymbols)
+         .count()
+@@ -465,7 +469,9 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
+ 
+     let get_symbols = |pattern: &str, editor: &mut Editor, _data, injector: &Injector<_, _>| {
+         let doc = doc!(editor);
++
+         let mut seen_language_servers = HashSet::new();
++
+         let mut futures: FuturesUnordered<_> = doc
+             .language_servers_with_feature(LanguageServerFeature::WorkspaceSymbols)
+             .filter(|ls| seen_language_servers.insert(ls.id()))
+@@ -529,10 +535,30 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
+         }
+         .boxed()
+     };
++
+     let columns = [
+-        ui::PickerColumn::new("kind", |item: &SymbolInformationItem, _| {
+-            display_symbol_kind(item.symbol.kind).into()
+-        }),
++        ui::PickerColumn::new(
++            "kind",
++            |item: &SymbolInformationItem, theme: &Arc<Theme>| {
++                let name = item.symbol.kind.as_str();
++                let icons = ICONS.load();
++
++                let mut line = Vec::new();
++
++                if let Some(icon) = icons.kind().get(name) {
++                    line.push(Span::styled(
++                        icon.to_string(),
++                        theme
++                            .try_get_exact(&stack_format!("icons.kind.{name}"))
++                            .unwrap_or_else(|| icon.style()),
++                    ));
++                }
++
++                line.push(Span::raw(name));
++
++                Cell::from(Spans::from(line))
++            },
++        ),
+         ui::PickerColumn::new("name", |item: &SymbolInformationItem, _| {
+             item.symbol.name.as_str().into()
+         })
+@@ -560,7 +586,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
+         columns,
+         1, // name column
+         [],
+-        (),
++        cx.editor.theme.clone(),
+         move |cx, item, action| {
+             jump_to_location(cx.editor, &item.location, action);
+         },
+diff --git a/helix-term/src/commands/typed.rs b/helix-term/src/commands/typed.rs
+index 92ee9a384ff7..21afab8080c6 100644
+--- a/helix-term/src/commands/typed.rs
++++ b/helix-term/src/commands/typed.rs
+@@ -1,6 +1,7 @@
+ use std::fmt::Write;
+ use std::io::BufReader;
+ use std::ops::{self, Deref};
++use std::sync::Arc;
+ 
+ use crate::job::Job;
+ 
+@@ -1099,6 +1100,7 @@ fn force_cquit(cx: &mut compositor::Context, args: Args, event: PromptEvent) ->
+ 
+ fn theme(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+     let true_color = cx.editor.config.load().true_color || crate::true_color();
++
+     match event {
+         PromptEvent::Abort => {
+             cx.editor.unset_theme_preview()?;
+@@ -1112,9 +1114,9 @@ fn theme(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
+                     if !(true_color || theme.is_16_color()) {
+                         bail!("Unsupported theme: theme requires true color support");
+                     }
+-                    cx.editor.set_theme_preview(theme)?;
+-                };
+-            };
++                    cx.editor.set_theme_preview(Arc::from(theme))?;
++                }
++            }
+         }
+         PromptEvent::Validate => {
+             if let Some(theme_name) = args.first() {
+@@ -1126,14 +1128,14 @@ fn theme(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
+                 if !(true_color || theme.is_16_color()) {
+                     bail!("Unsupported theme: theme requires true color support");
+                 }
+-                cx.editor.set_theme(theme)?;
++                cx.editor.set_theme(Arc::from(theme))?;
+             } else {
+                 let name = cx.editor.theme.name().to_string();
+ 
+                 cx.editor.set_status(name);
+             }
+         }
+-    };
++    }
+ 
+     Ok(())
+ }
+diff --git a/helix-term/src/config.rs b/helix-term/src/config.rs
+index 3e61b8012dc8..3dcd611d6c52 100644
+--- a/helix-term/src/config.rs
++++ b/helix-term/src/config.rs
+@@ -1,12 +1,17 @@
+ use crate::keymap;
+ use crate::keymap::{merge_keys, KeyTrie};
+ use helix_loader::merge_toml_values;
+-use helix_view::{document::Mode, theme};
++use helix_view::{
++    document::Mode,
++    icons::{Icons, ICONS},
++    theme,
++};
+ use serde::Deserialize;
+ use std::collections::HashMap;
+ use std::fmt::Display;
+ use std::fs;
+ use std::io::Error as IOError;
++use std::sync::Arc;
+ use toml::de::Error as TomlError;
+ 
+ #[derive(Debug, Clone, PartialEq)]
+@@ -22,6 +27,7 @@ pub struct ConfigRaw {
+     pub theme: Option<theme::Config>,
+     pub keys: Option<HashMap<Mode, KeyTrie>>,
+     pub editor: Option<toml::Value>,
++    pub icons: Option<toml::Value>,
+ }
+ 
+ impl Default for Config {
+@@ -64,6 +70,7 @@ impl Config {
+             global.and_then(|file| toml::from_str(file).map_err(ConfigLoadError::BadConfig));
+         let local_config: Result<ConfigRaw, ConfigLoadError> =
+             local.and_then(|file| toml::from_str(&file).map_err(ConfigLoadError::BadConfig));
++
+         let res = match (global_config, local_config) {
+             (Ok(global), Ok(local)) => {
+                 let mut keys = keymap::default();
+@@ -84,6 +91,18 @@ impl Config {
+                         .map_err(ConfigLoadError::BadConfig)?,
+                 };
+ 
++                let icons: Icons = match (global.icons, local.icons) {
++                    (None, None) => Icons::default(),
++                    (None, Some(config)) | (Some(config), None) => {
++                        config.try_into().map_err(ConfigLoadError::BadConfig)?
++                    }
++                    (Some(global), Some(local)) => merge_toml_values(global, local, 3)
++                        .try_into()
++                        .map_err(ConfigLoadError::BadConfig)?,
++                };
++
++                ICONS.store(Arc::new(icons));
++
+                 Config {
+                     theme: local.theme.or(global.theme),
+                     keys,
+@@ -100,6 +119,14 @@ impl Config {
+                 if let Some(keymap) = config.keys {
+                     merge_keys(&mut keys, keymap);
+                 }
++
++                let icons = config.icons.map_or_else(
++                    || Ok(Icons::default()),
++                    |config| config.try_into().map_err(ConfigLoadError::BadConfig),
++                )?;
++
++                ICONS.store(Arc::new(icons));
++
+                 Config {
+                     theme: config.theme,
+                     keys,
+diff --git a/helix-term/src/handlers/document_colors.rs b/helix-term/src/handlers/document_colors.rs
+index 10082ec72e7e..c0975a26b5a7 100644
+--- a/helix-term/src/handlers/document_colors.rs
++++ b/helix-term/src/handlers/document_colors.rs
+@@ -1,13 +1,16 @@
+ use std::{collections::HashSet, time::Duration};
+ 
+ use futures_util::{stream::FuturesUnordered, StreamExt};
+-use helix_core::{syntax::config::LanguageServerFeature, text_annotations::InlineAnnotation};
++use helix_core::{
++    syntax::config::LanguageServerFeature, text_annotations::InlineAnnotation, Tendril,
++};
+ use helix_event::{cancelable_future, register_hook};
+ use helix_lsp::lsp;
+ use helix_view::{
+     document::DocumentColorSwatches,
+     events::{DocumentDidChange, DocumentDidOpen, LanguageServerExited, LanguageServerInitialized},
+     handlers::{lsp::DocumentColorsEvent, Handlers},
++    icons::ICONS,
+     DocumentId, Editor, Theme,
+ };
+ use tokio::time::Instant;
+@@ -124,9 +127,14 @@ fn attach_document_colors(
+     let mut color_swatches_padding = Vec::with_capacity(doc_colors.len());
+     let mut colors = Vec::with_capacity(doc_colors.len());
+ 
++    let icons = ICONS.load();
++    let glyph = Tendril::from(icons.kind().color().glyph());
++
+     for (pos, color) in doc_colors {
+         color_swatches_padding.push(InlineAnnotation::new(pos, " "));
+-        color_swatches.push(InlineAnnotation::new(pos, "■"));
++
++        color_swatches.push(InlineAnnotation::new(pos, glyph.clone()));
++
+         colors.push(Theme::rgb_highlight(
+             (color.red * 255.) as u8,
+             (color.green * 255.) as u8,
+diff --git a/helix-term/src/ui/completion.rs b/helix-term/src/ui/completion.rs
+index 0bf00cea9b58..2c1af52243d3 100644
+--- a/helix-term/src/ui/completion.rs
++++ b/helix-term/src/ui/completion.rs
+@@ -9,6 +9,9 @@ use crate::{
+ use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
+ use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};
+ use helix_lsp::{lsp, util, OffsetEncoding};
++use helix_stdx::stack_format;
++use helix_view::icons::ICONS;
++use helix_view::Theme;
+ use helix_view::{
+     editor::CompleteAction,
+     handlers::lsp::SignatureHelpInvoked,
+@@ -20,99 +23,109 @@ use nucleo::{
+     pattern::{Atom, AtomKind, CaseMatching, Normalization},
+     Config, Utf32Str,
+ };
+-use tui::text::Spans;
+ use tui::{buffer::Buffer as Surface, text::Span};
+ 
+ use std::cmp::Reverse;
++use std::sync::Arc;
+ 
+ impl menu::Item for CompletionItem {
+-    type Data = Style;
++    type Data = Arc<Theme>;
+ 
+-    fn format(&self, dir_style: &Self::Data) -> menu::Row<'_> {
++    fn format(&self, theme: &Self::Data) -> menu::Row<'_> {
+         let deprecated = match self {
+-            CompletionItem::Lsp(LspCompletionItem { item, .. }) => {
++            Self::Lsp(LspCompletionItem { item, .. }) => {
+                 item.deprecated.unwrap_or_default()
+                     || item
+                         .tags
+                         .as_ref()
+                         .is_some_and(|tags| tags.contains(&lsp::CompletionItemTag::DEPRECATED))
+             }
+-            CompletionItem::Other(_) => false,
++            Self::Other(_) => false,
+         };
+ 
+         let label = match self {
+-            CompletionItem::Lsp(LspCompletionItem { item, .. }) => item.label.as_str(),
+-            CompletionItem::Other(core::CompletionItem { label, .. }) => label,
++            Self::Lsp(LspCompletionItem { item, .. }) => item.label.as_str(),
++            Self::Other(core::CompletionItem { label, .. }) => label,
+         };
+ 
++        let mut color = None;
++
+         let kind = match self {
+-            CompletionItem::Lsp(LspCompletionItem { item, .. }) => match item.kind {
+-                Some(lsp::CompletionItemKind::TEXT) => "text".into(),
+-                Some(lsp::CompletionItemKind::METHOD) => "method".into(),
+-                Some(lsp::CompletionItemKind::FUNCTION) => "function".into(),
+-                Some(lsp::CompletionItemKind::CONSTRUCTOR) => "constructor".into(),
+-                Some(lsp::CompletionItemKind::FIELD) => "field".into(),
+-                Some(lsp::CompletionItemKind::VARIABLE) => "variable".into(),
+-                Some(lsp::CompletionItemKind::CLASS) => "class".into(),
+-                Some(lsp::CompletionItemKind::INTERFACE) => "interface".into(),
+-                Some(lsp::CompletionItemKind::MODULE) => "module".into(),
+-                Some(lsp::CompletionItemKind::PROPERTY) => "property".into(),
+-                Some(lsp::CompletionItemKind::UNIT) => "unit".into(),
+-                Some(lsp::CompletionItemKind::VALUE) => "value".into(),
+-                Some(lsp::CompletionItemKind::ENUM) => "enum".into(),
+-                Some(lsp::CompletionItemKind::KEYWORD) => "keyword".into(),
+-                Some(lsp::CompletionItemKind::SNIPPET) => "snippet".into(),
+-                Some(lsp::CompletionItemKind::COLOR) => item
+-                    .documentation
+-                    .as_ref()
+-                    .and_then(|docs| {
+-                        let text = match docs {
+-                            lsp::Documentation::String(text) => text,
+-                            lsp::Documentation::MarkupContent(lsp::MarkupContent {
+-                                value, ..
+-                            }) => value,
+-                        };
+-                        // Language servers which send Color completion items tend to include a 6
+-                        // digit hex code at the end for the color. The extra 1 digit is for the '#'
+-                        text.get(text.len().checked_sub(7)?..)
+-                    })
+-                    .and_then(|c| Color::from_hex(c).ok())
+-                    .map_or("color".into(), |color| {
+-                        Spans::from(vec![
+-                            Span::raw("color "),
+-                            Span::styled("■", Style::default().fg(color)),
+-                        ])
+-                    }),
+-                Some(lsp::CompletionItemKind::FILE) => "file".into(),
+-                Some(lsp::CompletionItemKind::REFERENCE) => "reference".into(),
+-                Some(lsp::CompletionItemKind::FOLDER) => "folder".into(),
+-                Some(lsp::CompletionItemKind::ENUM_MEMBER) => "enum_member".into(),
+-                Some(lsp::CompletionItemKind::CONSTANT) => "constant".into(),
+-                Some(lsp::CompletionItemKind::STRUCT) => "struct".into(),
+-                Some(lsp::CompletionItemKind::EVENT) => "event".into(),
+-                Some(lsp::CompletionItemKind::OPERATOR) => "operator".into(),
+-                Some(lsp::CompletionItemKind::TYPE_PARAMETER) => "type_param".into(),
+-                Some(kind) => {
+-                    log::error!("Received unknown completion item kind: {:?}", kind);
+-                    "".into()
++            Self::Lsp(LspCompletionItem { item, .. }) => {
++                match item.kind.map(|kind| kind.as_str()) {
++                    Some("color") => {
++                        if let Some(doc) = item.documentation.as_ref() {
++                            let text = match doc {
++                                lsp::Documentation::String(text) => text,
++                                lsp::Documentation::MarkupContent(lsp::MarkupContent {
++                                    value,
++                                    ..
++                                }) => value,
++                            };
++
++                            // Language servers which send Color completion items
++                            // tend to include a 6 digit hex code at the end for
++                            // the color; the extra 1 digit is for the '#'
++                            if let Some(range) = text.len().checked_sub(7) {
++                                if let Some(hex) = text.get(range..) {
++                                    color = Color::from_hex(hex).ok();
++                                }
++                            }
++                        }
++
++                        Span::from("color")
++                    }
++                    Some(kind) => Span::raw(kind),
++                    None => {
++                        log::error!("Received unknown completion item kind: {:?}", item.kind);
++                        Span::raw("")
++                    }
+                 }
+-                None => "".into(),
+-            },
+-            CompletionItem::Other(core::CompletionItem { kind, .. }) => kind.as_ref().into(),
++            }
++            Self::Other(core::CompletionItem { kind, .. }) => Span::from(kind.as_ref()),
+         };
+ 
++        let icons = ICONS.load();
++
++        let name = &kind.content;
++        let is_folder = kind.content == "folder";
++
+         let label = Span::styled(
+             label,
+             if deprecated {
+                 Style::default().add_modifier(Modifier::CROSSED_OUT)
+-            } else if kind.0[0].content == "folder" {
+-                *dir_style
++            } else if is_folder {
++                theme.get("ui.text.directory")
+             } else {
+                 Style::default()
+             },
+         );
+ 
+-        menu::Row::new([menu::Cell::from(label), menu::Cell::from(kind)])
++        if let Some(color) = color {
++            menu::Row::new([
++                menu::Cell::from(Span::styled(icons.kind().color().to_string(), color)),
++                menu::Cell::from(label),
++                menu::Cell::from(kind),
++            ])
++        } else if let Some(icon) = icons.kind().get(name) {
++            let style = theme
++                .try_get_exact(&stack_format!("icons.kind.{name}"))
++                .unwrap_or_else(|| icon.style());
++
++            menu::Row::new([
++                // NOTE:
++                // As the icon is in its own cell, we can remove all padding. However,
++                // for visual conformity, as well as to assist terminals in rendering
++                // correctly, we pad the right still, leaving a space between the icon
++                // and the contents; Some terminals render an icon a different width
++                // depending on if there is a space or not.
++                menu::Cell::from(Span::styled(icon.with_padding(0, 1).to_string(), style)),
++                menu::Cell::from(label),
++                menu::Cell::from(kind),
++            ])
++        } else {
++            menu::Row::new([menu::Cell::from(label), menu::Cell::from(kind)])
++        }
+     }
+ }
+ 
+@@ -133,10 +146,10 @@ impl Completion {
+         let preview_completion_insert = editor.config().preview_completion_insert;
+         let replace_mode = editor.config().completion_replace;
+ 
+-        let dir_style = editor.theme.get("ui.text.directory");
++        let theme = editor.theme.clone();
+ 
+         // Then create the menu
+-        let menu = Menu::new(items, dir_style, move |editor: &mut Editor, item, event| {
++        let menu = Menu::new(items, theme, move |editor: &mut Editor, item, event| {
+             let (view, doc) = current!(editor);
+ 
+             macro_rules! language_server {
+diff --git a/helix-term/src/ui/document.rs b/helix-term/src/ui/document.rs
+index 563b88014e9f..3fbd05d77ac4 100644
+--- a/helix-term/src/ui/document.rs
++++ b/helix-term/src/ui/document.rs
+@@ -7,8 +7,11 @@ use helix_core::syntax::{self, HighlightEvent, Highlighter, OverlayHighlights};
+ use helix_core::text_annotations::TextAnnotations;
+ use helix_core::{visual_offset_from_block, Position, RopeSlice};
+ use helix_stdx::rope::RopeSliceExt;
++use helix_stdx::stack_format;
++use helix_stdx::string::StackString;
+ use helix_view::editor::{WhitespaceConfig, WhitespaceRenderValue};
+ use helix_view::graphics::Rect;
++use helix_view::icons::ICONS;
+ use helix_view::theme::Style;
+ use helix_view::view::ViewPosition;
+ use helix_view::{Document, Theme};
+@@ -175,18 +178,21 @@ pub fn render_text(
+ #[derive(Debug)]
+ pub struct TextRenderer<'a> {
+     surface: &'a mut Surface,
++
++    pub indent_guide_char: char,
++    pub newline: StackString,
++    pub nbsp: StackString,
++    pub nnbsp: StackString,
++    pub space: StackString,
++    pub tab: StackString,
++    pub virtual_tab: StackString,
++
+     pub text_style: Style,
+     pub whitespace_style: Style,
+-    pub indent_guide_char: String,
+     pub indent_guide_style: Style,
+     pub indent_guide_rainbow: bool,
+     pub theme: &'a Theme,
+-    pub newline: String,
+-    pub nbsp: String,
+-    pub nnbsp: String,
+-    pub space: String,
+-    pub tab: String,
+-    pub virtual_tab: String,
++
+     pub indent_width: u16,
+     pub starting_indent: usize,
+     pub draw_indent_guides: bool,
+@@ -205,57 +211,74 @@ impl<'a> TextRenderer<'a> {
+         offset: Position,
+         viewport: Rect,
+     ) -> TextRenderer<'a> {
+-        let editor_config = doc.config.load();
+-        let WhitespaceConfig {
+-            render: ws_render,
+-            characters: ws_chars,
+-        } = &editor_config.whitespace;
++        let config = doc.config.load();
++        let WhitespaceConfig { render } = &config.whitespace;
+ 
+         let tab_width = doc.tab_width();
+-        let tab = if ws_render.tab() == WhitespaceRenderValue::All {
+-            std::iter::once(ws_chars.tab)
+-                .chain(std::iter::repeat_n(ws_chars.tabpad, tab_width - 1))
+-                .collect()
+-        } else {
+-            " ".repeat(tab_width)
++
++        let icons = ICONS.load();
++        let whitespace = icons.ui().r#virtual();
++
++        let tab = match render.tab() {
++            WhitespaceRenderValue::All => std::iter::once(whitespace.tab().glyph().as_str())
++                .chain(std::iter::repeat_n(
++                    whitespace.tabpad().glyph().as_str(),
++                    tab_width - 1,
++                ))
++                .fold(StackString::new(), |mut string, str| {
++                    string.push_str(str);
++                    string
++                }),
++            WhitespaceRenderValue::None => {
++                let mut string = StackString::new();
++                for _ in 0..tab_width {
++                    string.push(' ');
++                }
++                string
++            }
+         };
+-        let virtual_tab = " ".repeat(tab_width);
+-        let newline = if ws_render.newline() == WhitespaceRenderValue::All {
+-            ws_chars.newline.into()
+-        } else {
+-            " ".to_owned()
++
++        let virtual_tab = {
++            let mut string = StackString::new();
++            for _ in 0..tab_width {
++                string.push(' ');
++            }
++            string
+         };
+ 
+-        let space = if ws_render.space() == WhitespaceRenderValue::All {
+-            ws_chars.space.into()
+-        } else {
+-            " ".to_owned()
++        let newline = match render.newline() {
++            WhitespaceRenderValue::None => StackString::from(" "),
++            WhitespaceRenderValue::All => whitespace.newline().glyph(),
+         };
+-        let nbsp = if ws_render.nbsp() == WhitespaceRenderValue::All {
+-            ws_chars.nbsp.into()
+-        } else {
+-            " ".to_owned()
++
++        let space = match render.space() {
++            WhitespaceRenderValue::None => StackString::from(" "),
++            WhitespaceRenderValue::All => whitespace.space().glyph(),
+         };
+-        let nnbsp = if ws_render.nnbsp() == WhitespaceRenderValue::All {
+-            ws_chars.nnbsp.into()
+-        } else {
+-            " ".to_owned()
++
++        let nbsp = match render.nbsp() {
++            WhitespaceRenderValue::None => StackString::from(" "),
++            WhitespaceRenderValue::All => whitespace.nbsp().glyph(),
+         };
+ 
+-        let text_style = theme.get("ui.text");
++        let nnbsp = match render.nnbsp() {
++            WhitespaceRenderValue::None => StackString::from(" "),
++            WhitespaceRenderValue::All => whitespace.nnbsp().glyph(),
++        };
++        let text_style = theme.get("ui.text");
+         let indent_guide_style = text_style.patch(
+             theme
+                 .try_get("ui.virtual.indent-guide")
+                 .unwrap_or_else(|| theme.get("ui.virtual.whitespace")),
+         );
+
+         let indent_width = doc.indent_style.indent_width(tab_width) as u16;
+ 
+         TextRenderer {
+             surface,
+-            indent_guide_char: editor_config.indent_guides.character.into(),
++            indent_guide_char: config.indent_guides.character,
+             indent_guide_rainbow: editor_config.indent_guides.rainbow,
+             theme,
+             newline,
+             nbsp,
+             nnbsp,
+@@ -259,14 +282,15 @@ impl<'a> TextRenderer<'a> {
+             indent_width,
+             starting_indent: offset.col / indent_width as usize
+                 + !offset.col.is_multiple_of(indent_width as usize) as usize
+-                + editor_config.indent_guides.skip_levels as usize,
++                + config.indent_guides.skip_levels as usize,
+             indent_guide_style,
+             text_style,
+-            draw_indent_guides: editor_config.indent_guides.render,
++            draw_indent_guides: config.indent_guides.render,
+             viewport,
+             offset,
+         }
+     }
++
+     /// Draws a single `grapheme` at the current render position with a specified `style`.
+     pub fn draw_decoration_grapheme(
+         &mut self,
+@@ -413,18 +437,23 @@ impl<'a> TextRenderer<'a> {
+         ) / self.indent_width as usize;
+ 
+         for i in self.starting_indent..end_indent {
+-            let x = (self.viewport.x as usize + (i * self.indent_width as usize) - self.offset.col)
+-                as u16;
++            let x = self.viewport.x + (i as u16 * self.indent_width) - self.offset.col as u16;
+             let y = self.viewport.y + row;
++
+             debug_assert!(self.surface.in_bounds(x, y));
+             let indent_guide_style = if self.indent_guide_rainbow {
+                 self.indent_guide_style
+                     .patch(self.theme.get_indent_rainbow(i))
+             } else {
+                 self.indent_guide_style
+             };
+-            self.surface
+-                .set_string(x, y, &self.indent_guide_char, indent_guide_style)
++
++            self.surface.set_string(
++                x,
++                y,
++                &stack_format!("{}", self.indent_guide_char),
++                indent_guide_style,
++            );
+         }
+     }
+ 
+diff --git a/helix-term/src/ui/editor.rs b/helix-term/src/ui/editor.rs
+index 5127a7be359c..94339c87a812 100644
+--- a/helix-term/src/ui/editor.rs
++++ b/helix-term/src/ui/editor.rs
+@@ -27,6 +27,7 @@ use helix_view::{
+     document::{Mode, SCRATCH_BUFFER_NAME},
+     editor::{CompleteAction, CursorShapeConfig},
+     graphics::{Color, CursorKind, Modifier, Rect, Style},
++    icons::ICONS,
+     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
+     keyboard::{KeyCode, KeyModifiers},
+     Document, Editor, Theme, View,
+@@ -254,15 +255,16 @@ impl EditorView {
+         surface: &mut Surface,
+         theme: &Theme,
+     ) {
+-        let editor_rulers = &editor.config().rulers;
+-        let ruler_theme = theme
++        let config = editor.config();
++
++        let style = theme
+             .try_get("ui.virtual.ruler")
+             .unwrap_or_else(|| Style::default().bg(Color::Red));
+ 
+         let rulers = doc
+             .language_config()
+-            .and_then(|config| config.rulers.as_ref())
+-            .unwrap_or(editor_rulers);
++            .and_then(|config| config.rulers.as_deref())
++            .unwrap_or_else(|| config.rulers.as_slice());
+ 
+         let view_offset = doc.view_offset(view.id);
+ 
+@@ -273,7 +275,17 @@ impl EditorView {
+             .filter_map(|ruler| ruler.checked_sub(1 + view_offset.horizontal_offset as u16))
+             .filter(|ruler| ruler < &viewport.width)
+             .map(|ruler| viewport.clip_left(ruler).with_width(1))
+-            .for_each(|area| surface.set_style(area, ruler_theme))
++            .for_each(|area| {
++                let icons = ICONS.load();
++                for y in area.top()..area.bottom() {
++                    surface.set_string(
++                        area.x,
++                        y,
++                        &icons.ui().r#virtual().ruler().to_string(),
++                        style,
++                    );
++                }
++            });
+     }
+ 
+     fn viewport_byte_range(
+@@ -660,31 +672,32 @@ impl EditorView {
+     }
+ 
+     /// Render bufferline at the top
++    #[allow(clippy::too_many_lines)]
+     pub fn render_bufferline(editor: &Editor, viewport: Rect, surface: &mut Surface) {
++        let theme = editor.theme.as_ref();
++
+         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
++
+         surface.clear_with(
+             viewport,
+-            editor
+-                .theme
++            theme
+                 .try_get("ui.bufferline.background")
+-                .unwrap_or_else(|| editor.theme.get("ui.statusline")),
++                .unwrap_or_else(|| theme.get("ui.statusline")),
+         );
+ 
+-        let bufferline_active = editor
+-            .theme
++        let bufferline_active = theme
+             .try_get("ui.bufferline.active")
+-            .unwrap_or_else(|| editor.theme.get("ui.statusline.active"));
++            .unwrap_or_else(|| theme.get("ui.statusline.active"));
+ 
+-        let bufferline_inactive = editor
+-            .theme
++        let bufferline_inactive = theme
+             .try_get("ui.bufferline")
+-            .unwrap_or_else(|| editor.theme.get("ui.statusline.inactive"));
++            .unwrap_or_else(|| theme.get("ui.statusline.inactive"));
+ 
+         let mut x = viewport.x;
+         let current_doc = view!(editor).doc;
+ 
+         for doc in editor.documents() {
+-            let fname = doc
++            let name = doc
+                 .path()
+                 .unwrap_or(&scratch)
+                 .file_name()
+@@ -692,22 +705,72 @@ impl EditorView {
+                 .to_str()
+                 .unwrap_or_default();
+ 
+-            let style = if current_doc == doc.id() {
++            let is_active = current_doc == doc.id();
++
++            let base = if is_active {
+                 bufferline_active
+             } else {
+                 bufferline_inactive
+             };
+ 
+-            let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
+-            let used_width = viewport.x.saturating_sub(x);
+-            let rem_width = surface.area.width.saturating_sub(used_width);
++            let path = doc.path();
++
++            let icons = ICONS.load();
+ 
+-            x = surface
+-                .set_stringn(x, viewport.y, &text, rem_width as usize, style)
+-                .0;
++            if let Some(path) = path {
++                if let Some(file) = icons.fs().file() {
++                    let icon = file.get_with_active_style_or_default(path, theme, base);
+ 
+-            if x >= surface.area.right() {
+-                break;
++                    let used = viewport.x.saturating_sub(x);
++                    let remaining = surface.area.width.saturating_sub(used);
++
++                    x = surface
++                        .set_stringn(
++                            x,
++                            viewport.y,
++                            &icon.glyph(),
++                            remaining as usize,
++                            icon.style(),
++                        )
++                        .0;
++
++                    if x >= surface.area.right() {
++                        break;
++                    }
++                }
++            }
++
++            // PERF:
++            // Rather than using `format!{"{name} "}`, we can save an allocation.
++            for element in [name, " "] {
++                let used = viewport.x.saturating_sub(x);
++                let remaining = surface.area.width.saturating_sub(used);
++
++                x = surface
++                    .set_stringn(x, viewport.y, element, remaining as usize, base)
++                    .0;
++
++                if x >= surface.area.right() {
++                    break;
++                }
++            }
++
++            if doc.is_modified() {
++                let modified = icons.ui().indicator().modified();
++                // PERF:
++                // Rather than using `format!{"{name} "}`, we can save an allocation.
++                for element in [modified.glyph().as_str(), " "] {
++                    let used = viewport.x.saturating_sub(x);
++                    let remaining = surface.area.width.saturating_sub(used);
++
++                    x = surface
++                        .set_stringn(x, viewport.y, element, remaining as usize, base)
++                        .0;
++
++                    if x >= surface.area.right() {
++                        break;
++                    }
++                }
+             }
+         }
+     }
+diff --git a/helix-term/src/ui/mod.rs b/helix-term/src/ui/mod.rs
+index 12d2a2e2b249..fca528383849 100644
+--- a/helix-term/src/ui/mod.rs
++++ b/helix-term/src/ui/mod.rs
+@@ -21,7 +21,7 @@ use crate::job::{self, Callback};
+ pub use completion::Completion;
+ pub use editor::EditorView;
+ use helix_stdx::rope;
+-use helix_view::theme::Style;
++use helix_view::icons::ICONS;
+ pub use markdown::Markdown;
+ pub use menu::Menu;
+ pub use picker::{Column as PickerColumn, FileLocation, Picker};
+@@ -31,10 +31,13 @@ pub use select::Select;
+ pub use spinner::{ProgressSpinners, Spinner};
+ pub use text::Text;
+ 
+-use helix_view::Editor;
++use helix_view::{Editor, Theme};
+ use tui::text::{Span, Spans};
++use tui::widgets::Cell;
+ 
++use std::borrow::Cow;
+ use std::path::Path;
++use std::sync::Arc;
+ use std::{error::Error, path::PathBuf};
+ 
+ struct Utf8PathBuf {
+@@ -213,10 +216,11 @@ fn get_excluded_types() -> ignore::types::Types {
+ #[derive(Debug)]
+ pub struct FilePickerData {
+     root: PathBuf,
+-    directory_style: Style,
++    theme: Arc<Theme>,
+ }
+ type FilePicker = Picker<PathBuf, FilePickerData>;
+ 
++#[allow(clippy::too_many_lines)]
+ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
+     use ignore::WalkBuilder;
+     use std::time::Instant;
+@@ -224,7 +228,7 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
+     let config = editor.config();
+     let data = FilePickerData {
+         root: root.clone(),
+-        directory_style: editor.theme.get("ui.text.directory"),
++        theme: editor.theme.clone(),
+     };
+ 
+     let now = Instant::now();
+@@ -261,20 +265,37 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
+     let columns = [PickerColumn::new(
+         "path",
+         |item: &PathBuf, data: &FilePickerData| {
++            let theme = data.theme.as_ref();
++
+             let path = item.strip_prefix(&data.root).unwrap_or(item);
+-            let mut spans = Vec::with_capacity(3);
++
++            let mut line = Vec::with_capacity(4);
++
++            let icons = ICONS.load();
++
++            if let Some(file) = icons.fs().file() {
++                let icon = file.get_with_style_or_default(item, theme);
++                line.push(Span::from(icon));
++            }
++
+             if let Some(dirs) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+-                spans.extend([
+-                    Span::styled(dirs.to_string_lossy(), data.directory_style),
+-                    Span::styled(std::path::MAIN_SEPARATOR_STR, data.directory_style),
++                line.extend([
++                    Span::styled(dirs.to_string_lossy(), theme.get("ui.text.directory")),
++                    Span::styled(
++                        std::path::MAIN_SEPARATOR_STR,
++                        theme.get("ui.text.directory"),
++                    ),
+                 ]);
+             }
++
+             let filename = path
+                 .file_name()
+                 .expect("normalized paths can't end in `..`")
+                 .to_string_lossy();
+-            spans.push(Span::raw(filename));
+-            Spans::from(spans).into()
++
++            line.push(Span::raw(filename));
++
++            Spans::from(line).into()
+         },
+     )];
+     let picker = Picker::new(columns, 0, [], data, move |cx, path: &PathBuf, action| {
+@@ -313,28 +334,59 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
+     picker
+ }
+ 
+-type FileExplorer = Picker<(PathBuf, bool), (PathBuf, Style)>;
++type FileExplorer = Picker<(PathBuf, bool), (PathBuf, Arc<Theme>)>;
+ 
+ pub fn file_explorer(root: PathBuf, editor: &Editor) -> Result<FileExplorer, std::io::Error> {
+-    let directory_style = editor.theme.get("ui.text.directory");
+     let directory_content = directory_content(&root, editor)?;
+ 
+     let columns = [PickerColumn::new(
+         "path",
+-        |(path, is_dir): &(PathBuf, bool), (root, directory_style): &(PathBuf, Style)| {
+-            let name = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
++        |(path, is_dir): &(PathBuf, bool), (_root, theme): &(PathBuf, Arc<Theme>)| {
++            let name = path.file_name();
++            // If path is `..` then this will be `None` and signifies being the
++            // previous directory, which said another way, is the currently open
++            // directory we are viewing.
++            let is_open = name.is_none() && *is_dir;
++
++            // Path `..` does not have a name, and so will become `..` as a string.
++            let name = name.map_or_else(|| Cow::Borrowed(".."), |dir| dir.to_string_lossy());
++
++            let icons = ICONS.load();
++
+             if *is_dir {
+-                Span::styled(format!("{}/", name), *directory_style).into()
++                let mut line = vec![];
++
++                let base = theme.get("ui.text.directory");
++
++                if let Some(directory) = icons.fs().directory() {
++                    let icon = directory.get_with_style_or_default(&name, is_open, theme, base);
++                    line.push(Span::from(icon));
++                }
++
++                line.push(Span::styled(format!("{name}/"), base));
++
++                Cell::from(Spans::from(line))
++            } else if let Some(file) = icons.fs().file() {
++                let icon = file.get_with_style_or_default(path, theme);
++
++                Cell::from(Spans::from(vec![
++                    Span::from(icon),
++                    Span::raw({
++                        let name = path.file_name().map(|name| name.display());
++                        name.map(|name| name.to_string()).unwrap_or_default()
++                    }),
++                ]))
+             } else {
+-                name.into()
++                Cell::from(name)
+             }
+         },
+     )];
++
+     let picker = Picker::new(
+         columns,
+         0,
+         directory_content,
+-        (root, directory_style),
++        (root, editor.theme.clone()),
+         move |cx, (path, is_dir): &(PathBuf, bool), action| {
+             if *is_dir {
+                 let new_root = helix_stdx::path::normalize(path);
+@@ -349,10 +401,9 @@ pub fn file_explorer(root: PathBuf, editor: &Editor) -> Result<FileExplorer, std
+                 });
+                 cx.jobs.callback(callback);
+             } else if let Err(e) = cx.editor.open(path, action) {
+-                let err = if let Some(err) = e.source() {
+-                    format!("{}", err)
+-                } else {
+-                    format!("unable to open \"{}\"", path.display())
++                let err = match e.source() {
++                    Some(err) => format!("{}", err),
++                    None => format!("unable to open \"{}\"", path.display()),
+                 };
+                 cx.editor.set_error(err);
+             }
+diff --git a/helix-term/src/ui/picker.rs b/helix-term/src/ui/picker.rs
+index 81ad3df310f9..c9e33aed4c83 100644
+--- a/helix-term/src/ui/picker.rs
++++ b/helix-term/src/ui/picker.rs
+@@ -32,7 +32,7 @@ use std::{
+     borrow::Cow,
+     collections::HashMap,
+     io::Read,
+-    path::Path,
++    path::{Path, PathBuf},
+     sync::{
+         atomic::{self, AtomicUsize},
+         Arc,
+@@ -47,6 +47,7 @@ use helix_core::{
+ use helix_view::{
+     editor::Action,
+     graphics::{CursorKind, Margin, Modifier, Rect},
++    icons::ICONS,
+     theme::Style,
+     view::ViewPosition,
+     Document, DocumentId, Editor,
+@@ -85,7 +86,7 @@ pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
+ 
+ pub enum CachedPreview {
+     Document(Box<Document>),
+-    Directory(Vec<(String, bool)>),
++    Directory(Vec<(PathBuf, bool)>),
+     Binary,
+     LargeFile,
+     NotFound,
+@@ -107,7 +108,7 @@ impl Preview<'_, '_> {
+         }
+     }
+ 
+-    fn dir_content(&self) -> Option<&Vec<(String, bool)>> {
++    fn dir_content(&self) -> Option<&Vec<(PathBuf, bool)>> {
+         match self {
+             Preview::Cached(CachedPreview::Directory(dir_content)) => Some(dir_content),
+             _ => None,
+@@ -611,22 +612,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+                     .and_then(|metadata| {
+                         if metadata.is_dir() {
+                             let files = super::directory_content(&path, editor)?;
+-                            let file_names: Vec<_> = files
+-                                .iter()
+-                                .filter_map(|(file_path, is_dir)| {
+-                                    let name = file_path
+-                                        .strip_prefix(&path)
+-                                        .map(|p| Some(p.as_os_str()))
+-                                        .unwrap_or_else(|_| file_path.file_name())?
+-                                        .to_string_lossy();
+-                                    if *is_dir {
+-                                        Some((format!("{}/", name), true))
+-                                    } else {
+-                                        Some((name.into_owned(), false))
+-                                    }
+-                                })
+-                                .collect();
+-                            Ok(CachedPreview::Directory(file_names))
++                            Ok(CachedPreview::Directory(files))
+                         } else if metadata.is_file() {
+                             if metadata.len() > MAX_FILE_SIZE_FOR_PREVIEW {
+                                 return Ok(CachedPreview::LargeFile);
+@@ -879,17 +865,15 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+         );
+     }
+ 
++    #[allow(clippy::too_many_lines)]
+     fn render_preview(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+-        // -- Render the frame:
+-        // clear area
+-        let background = cx.editor.theme.get("ui.background");
+-        let text = cx.editor.theme.get("ui.text");
+-        let directory = cx.editor.theme.get("ui.text.directory");
+-        surface.clear_with(area, background);
+-
+         const BLOCK: Block<'_> = Block::bordered();
+ 
+-        // calculate the inner area inside the box
++        let theme = cx.editor.theme.as_ref();
++
++        surface.clear_with(area, cx.editor.theme.get("ui.background"));
++
++        // Calculate the inner area inside the box
+         let inner = BLOCK.inner(area);
+         // 1 column gap on either side
+         let margin = Margin::horizontal(1);
+@@ -907,17 +891,75 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+                 }
+                 _ => {
+                     if let Some(dir_content) = preview.dir_content() {
+-                        for (i, (path, is_dir)) in
++                        for (idx, (path, is_dir)) in
+                             dir_content.iter().take(inner.height as usize).enumerate()
+                         {
+-                            let style = if *is_dir { directory } else { text };
+-                            surface.set_stringn(
+-                                inner.x,
+-                                inner.y + i as u16,
+-                                path,
+-                                inner.width as usize,
+-                                style,
+-                            );
++                            let icons = ICONS.load();
++
++                            let dir = path.file_name();
++                            let is_dir = *is_dir;
++                            // If path is `..` then this will be `None` and signifies being the
++                            // previous directory, which said another way, is the currently open
++                            // directory we are viewing.
++                            let is_open = dir.is_none() && is_dir;
++
++                            let name = dir
++                                // Path `..` does not have a name, and so will become `..` as a string.
++                                .map_or_else(|| Cow::Borrowed(".."), |dir| dir.to_string_lossy());
++
++                            if is_dir {
++                                let width = icons
++                                    .fs()
++                                    .directory()
++                                    .map(|dir| dir.get(&name, is_open))
++                                    .map_or(0, |icon| {
++                                        surface.set_stringn(
++                                            inner.x,
++                                            inner.y + idx as u16,
++                                            &icon.glyph(),
++                                            inner.width as usize,
++                                            theme.get("ui.text.directory"),
++                                        );
++
++                                        icon.width()
++                                    });
++
++                                surface.set_stringn(
++                                    inner.x + width,
++                                    inner.y + idx as u16,
++                                    &format!("{name}/"),
++                                    inner.width as usize,
++                                    theme.get("ui.text.directory"),
++                                );
++                            } else if let Some(icon) = icons
++                                .fs()
++                                .file()
++                                .map(|file| file.get_with_style_or_default(path, theme))
++                            {
++                                surface.set_stringn(
++                                    inner.x,
++                                    inner.y + idx as u16,
++                                    &icon.glyph(),
++                                    inner.width as usize,
++                                    icon.style(),
++                                );
++
++                                surface.set_stringn(
++                                    inner.x + icon.width(),
++                                    inner.y + idx as u16,
++                                    &name,
++                                    inner.width as usize,
++                                    theme.get("ui.text"),
++                                );
++                            } else {
++                                surface.set_stringn(
++                                    inner.x,
++                                    inner.y + idx as u16,
++                                    &name,
++                                    inner.width as usize,
++                                    theme.get("ui.text"),
++                                );
++                            }
+                         }
+                         return;
+                     }
+@@ -925,7 +967,15 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+                     let alt_text = preview.placeholder();
+                     let x = inner.x + inner.width.saturating_sub(alt_text.len() as u16) / 2;
+                     let y = inner.y + inner.height / 2;
+-                    surface.set_stringn(x, y, alt_text, inner.width as usize, text);
++
++                    surface.set_stringn(
++                        x,
++                        y,
++                        alt_text,
++                        inner.width as usize,
++                        cx.editor.theme.get("ui.text"),
++                    );
++
+                     return;
+                 }
+             };
+@@ -962,7 +1012,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+ 
+             let syntax_highlighter =
+                 EditorView::doc_syntax_highlighter(doc, offset.anchor, area.height, &loader);
++
+             let mut overlay_highlights = Vec::new();
++
+             if doc
+                 .language_config()
+                 .and_then(|config| config.rainbow_brackets)
+@@ -993,6 +1045,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+                     .theme
+                     .try_get("ui.highlight")
+                     .unwrap_or_else(|| cx.editor.theme.get("ui.selection"));
++
+                 let draw_highlight = move |renderer: &mut TextRenderer, pos: LinePos| {
+                     if (start..=end).contains(&pos.doc_line) {
+                         let area = Rect::new(
+@@ -1001,9 +1054,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+                             renderer.viewport.width,
+                             1,
+                         );
+-                        renderer.set_style(area, style)
++                        renderer.set_style(area, style);
+                     }
+                 };
++
+                 decorations.add_decoration(draw_highlight);
+             }
+ 
+diff --git a/helix-term/src/ui/statusline.rs b/helix-term/src/ui/statusline.rs
+index 3c6cfce8ebff..fe7548e8c2be 100644
+--- a/helix-term/src/ui/statusline.rs
++++ b/helix-term/src/ui/statusline.rs
+@@ -2,6 +2,7 @@ use helix_core::indent::IndentStyle;
+ use helix_core::{coords_at_pos, encoding, unicode::width::UnicodeWidthStr, Position};
+ use helix_lsp::lsp::DiagnosticSeverity;
+ use helix_view::document::DEFAULT_LANGUAGE_NAME;
++use helix_view::icons::ICONS;
+ use helix_view::{
+     document::{Mode, SCRATCH_BUFFER_NAME},
+     graphics::Rect,
+@@ -217,6 +218,7 @@ where
+     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+ {
+     use helix_core::diagnostic::Severity;
++
+     let (hints, info, warnings, errors) =
+         context
+             .doc
+@@ -232,29 +234,49 @@ where
+                 counts
+             });
+ 
+-    for sev in &context.editor.config().statusline.diagnostics {
+-        match sev {
++    let icons = ICONS.load();
++
++    for severity in &context.editor.config().statusline.diagnostics {
++        match severity {
+             Severity::Hint if hints > 0 => {
+-                write(context, Span::styled("●", context.editor.theme.get("hint")));
+-                write(context, format!(" {} ", hints).into());
++                write(
++                    context,
++                    Span::styled(
++                        icons.diagnostic().hint().to_string(),
++                        context.editor.theme.get("hint"),
++                    ),
++                );
++                write(context, Span::raw(hints.to_string()));
+             }
+             Severity::Info if info > 0 => {
+-                write(context, Span::styled("●", context.editor.theme.get("info")));
+-                write(context, format!(" {} ", info).into());
++                write(
++                    context,
++                    Span::styled(
++                        icons.diagnostic().info().to_string(),
++                        context.editor.theme.get("info"),
++                    ),
++                );
++                write(context, Span::raw(info.to_string()));
+             }
+             Severity::Warning if warnings > 0 => {
+                 write(
+                     context,
+-                    Span::styled("●", context.editor.theme.get("warning")),
++                    Span::styled(
++                        icons.diagnostic().warning().to_string(),
++                        context.editor.theme.get("warning"),
++                    ),
+                 );
+-                write(context, format!(" {} ", warnings).into());
++                write(context, Span::raw(warnings.to_string()));
+             }
+             Severity::Error if errors > 0 => {
+                 write(
+                     context,
+-                    Span::styled("●", context.editor.theme.get("error")),
++                    Span::styled(
++                        icons.diagnostic().error().to_string(),
++                        context.editor.theme.get("error"),
++                    ),
+                 );
+-                write(context, format!(" {} ", errors).into());
++                write(context, Span::raw(errors.to_string()));
+             }
+             _ => {}
+         }
+@@ -266,14 +288,17 @@ where
+     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+ {
+     use helix_core::diagnostic::Severity;
+-    let (hints, info, warnings, errors) = context.editor.diagnostics.values().flatten().fold(
++
++    let (hint, info, warning, error) = context.editor.diagnostics.values().flatten().fold(
+         (0u32, 0u32, 0u32, 0u32),
+-        |mut counts, (diag, _)| {
+-            match diag.severity {
+-                // PERF: For large workspace diagnostics, this loop can be very tight.
++        |mut counts, (diagnostic, _)| {
++            match diagnostic.severity {
++                // PERF:
++                // For large workspace diagnostics, this loop can be very tight.
+                 //
+                 // Most often the diagnostics will be for warnings and errors.
+-                // Errors should tend to be fixed fast, leaving warnings as the most common.
++                // Errors should tend to be fixed fast, leaving warnings as the
++                // most common.
+                 Some(DiagnosticSeverity::WARNING) => counts.2 += 1,
+                 Some(DiagnosticSeverity::ERROR) => counts.3 += 1,
+                 Some(DiagnosticSeverity::HINT) => counts.0 += 1,
+@@ -285,43 +310,70 @@ where
+         },
+     );
+ 
+-    let sevs_to_show = &context.editor.config().statusline.workspace_diagnostics;
++    let config = context.editor.config();
++
++    let diagnostics = config.statusline.workspace_diagnostics.as_slice();
+ 
+-    // Avoid showing the " W " if no diagnostic counts will be shown.
+-    if !sevs_to_show.iter().any(|sev| match sev {
+-        Severity::Hint => hints != 0,
++    // Avoid showing the ` W ` if no diagnostic counts will be shown.
++    if !diagnostics.iter().any(|severity| match severity {
++        Severity::Hint => hint != 0,
+         Severity::Info => info != 0,
+-        Severity::Warning => warnings != 0,
+-        Severity::Error => errors != 0,
++        Severity::Warning => warning != 0,
++        Severity::Error => error != 0,
+     }) {
+         return;
+     }
+ 
+-    write(context, " W ".into());
++    let icons = ICONS.load();
+ 
+-    for sev in sevs_to_show {
+-        match sev {
+-            Severity::Hint if hints > 0 => {
+-                write(context, Span::styled("●", context.editor.theme.get("hint")));
+-                write(context, format!(" {} ", hints).into());
++    let icon = icons.ui().workspace();
++    // Special case when the `workspace` is set to `""`:
++    //     - This will remove the default ` W ` so that the rest of the icons are spaced correctly.
++    if !icon.is_empty() {
++        write(context, Span::from(icon));
++    }
++
++    for severity in diagnostics {
++        match severity {
++            Severity::Hint if hint > 0 => {
++                write(
++                    context,
++                    Span::styled(
++                        icons.diagnostic().hint().to_string(),
++                        context.editor.theme.get("hint"),
++                    ),
++                );
++                write(context, Span::raw(hint.to_string()));
+             }
+             Severity::Info if info > 0 => {
+-                write(context, Span::styled("●", context.editor.theme.get("info")));
+-                write(context, format!(" {} ", info).into());
++                write(
++                    context,
++                    Span::styled(
++                        icons.diagnostic().info().to_string(),
++                        context.editor.theme.get("info"),
++                    ),
++                );
++                write(context, Span::raw(info.to_string()));
+             }
+-            Severity::Warning if warnings > 0 => {
++            Severity::Warning if warning > 0 => {
+                 write(
+                     context,
+-                    Span::styled("●", context.editor.theme.get("warning")),
++                    Span::styled(
++                        icons.diagnostic().warning().to_string(),
++                        context.editor.theme.get("warning"),
++                    ),
+                 );
+-                write(context, format!(" {} ", warnings).into());
++                write(context, Span::raw(warning.to_string()));
+             }
+-            Severity::Error if errors > 0 => {
++            Severity::Error if error > 0 => {
+                 write(
+                     context,
+-                    Span::styled("●", context.editor.theme.get("error")),
++                    Span::styled(
++                        icons.diagnostic().error().to_string(),
++                        context.editor.theme.get("error"),
++                    ),
+                 );
+-                write(context, format!(" {} ", errors).into());
++                write(context, Span::raw(error.to_string()));
+             }
+             _ => {}
+         }
+@@ -438,9 +490,21 @@ fn render_file_type<'a, F>(context: &mut RenderContext<'a>, write: F)
+ where
+     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+ {
+-    let file_type = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
++    let theme = context.editor.theme.as_ref();
++    let icons = ICONS.load();
++
++    let lang = context.doc.language_name().unwrap_or(DEFAULT_LANGUAGE_NAME);
++    let path = context.doc.path();
+ 
+-    write(context, format!(" {} ", file_type).into());
++    if let Some(file) = icons.fs().file() {
++        if let Some(path) = path {
++            let icon = file.get_with_style_or_default(path, theme);
++            write(context, Span::from(icon));
++            write(context, Span::from(format!("{lang} ")));
++        }
++    } else {
++        write(context, Span::from(format!(" {lang} ")));
++    }
+ }
+ 
+ fn render_file_name<'a, F>(context: &mut RenderContext<'a>, write: F)
+@@ -479,25 +543,26 @@ fn render_file_modification_indicator<'a, F>(context: &mut RenderContext<'a>, wr
+ where
+     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+ {
+-    let title = if context.doc.is_modified() {
+-        "[+]"
++    if context.doc.is_modified() {
++        let icons = ICONS.load();
++        let icon = icons.ui().indicator().modified();
++        write(context, Span::from(icon));
+     } else {
+-        "   "
+-    };
+-
+-    write(context, title.into());
++        write(context, Span::from("   "));
++    }
+ }
+ 
+ fn render_read_only_indicator<'a, F>(context: &mut RenderContext<'a>, write: F)
+ where
+     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+ {
+-    let title = if context.doc.readonly {
+-        " [readonly] "
++    if context.doc.readonly {
++        let icons = ICONS.load();
++        let icon = icons.ui().indicator().readonly();
++        write(context, Span::from(icon));
+     } else {
+-        ""
+-    };
+-    write(context, title.into());
++        write(context, Span::from(""));
++    }
+ }
+ 
+ fn render_file_base_name<'a, F>(context: &mut RenderContext<'a>, write: F)
+@@ -520,10 +585,10 @@ fn render_separator<'a, F>(context: &mut RenderContext<'a>, write: F)
+ where
+     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+ {
+-    let sep = &context.editor.config().statusline.separator;
+     let style = context.editor.theme.get("ui.statusline.separator");
+-
+-    write(context, Span::styled(sep.to_string(), style));
++    let icons = ICONS.load();
++    let icon = icons.ui().statusline().separator();
++    write(context, Span::styled(icon.to_string(), style));
+ }
+ 
+ fn render_spacer<'a, F>(context: &mut RenderContext<'a>, write: F)
+@@ -537,13 +602,30 @@ fn render_version_control<'a, F>(context: &mut RenderContext<'a>, write: F)
+ where
+     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+ {
+-    let head = context
+-        .doc
+-        .version_control_head()
+-        .unwrap_or_default()
+-        .to_string();
+-
+-    write(context, head.into());
++    let head = context.doc.version_control_head().unwrap_or_default();
++    if !head.is_empty() {
++        let icons = ICONS.load();
++
++        let theme = context.editor.theme.as_ref();
++        let style = theme
++            .try_get_exact("ui.statusline.version-control")
++            .unwrap_or_default();
++
++        if let Some(icon) = icons.vcs().branch() {
++            let base = theme
++                .try_get_exact("ui.statusline.version-control.branch")
++                .unwrap_or(style);
++
++            write(
++                context,
++                Span::styled(icon.to_string(), base.patch(icon.style())),
++            );
++
++            write(context, Span::styled(format!("{head} "), style));
++        } else {
++            write(context, Span::styled(format!(" {head} "), style));
++        }
++    }
+ }
+ 
+ fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)
+diff --git a/helix-term/src/ui/text_decorations/diagnostics.rs b/helix-term/src/ui/text_decorations/diagnostics.rs
+index 84f6c680344e..da17bc8a36a2 100644
+--- a/helix-term/src/ui/text_decorations/diagnostics.rs
++++ b/helix-term/src/ui/text_decorations/diagnostics.rs
+@@ -9,6 +9,7 @@ use helix_view::annotations::diagnostics::{
+     DiagnosticFilter, InlineDiagnosticAccumulator, InlineDiagnosticsConfig,
+ };
+ 
++use helix_view::icons::ICONS;
+ use helix_view::theme::Style;
+ use helix_view::{Document, Theme};
+ 
+@@ -102,6 +103,31 @@ impl Renderer<'_, '_> {
+         let mut end_col = start_col;
+         let mut draw_col = (col + 1) as u16;
+ 
++        let icons = ICONS.load();
++
++        let icon = match diag.severity() {
++            Severity::Hint => icons.diagnostic().hint(),
++            Severity::Info => icons.diagnostic().info(),
++            Severity::Warning => icons.diagnostic().warning(),
++            Severity::Error => icons.diagnostic().error(),
++        };
++
++        if !self
++            .renderer
++            .column_in_bounds(draw_col as usize, icon.width() as usize)
++        {
++            return 0;
++        }
++
++        self.renderer.set_string(
++            self.renderer.viewport.x + draw_col,
++            row,
++            icon.glyph().as_str(),
++            style,
++        );
++
++        draw_col += icon.width();
++
+         for line in diag.message.lines() {
+             if !self.renderer.column_in_bounds(draw_col as usize, 1) {
+                 break;
+diff --git a/helix-tui/Cargo.toml b/helix-tui/Cargo.toml
+index 5416f98f533a..27a10b4e3d6e 100644
+--- a/helix-tui/Cargo.toml
++++ b/helix-tui/Cargo.toml
+@@ -17,6 +17,7 @@ default = ["termina", "crossterm"]
+ [dependencies]
+ helix-view = { path = "../helix-view", features = ["term"] }
+ helix-core = { path = "../helix-core" }
++helix-stdx = { path = "../helix-stdx" }
+ 
+ bitflags.workspace = true
+ cassowary = "0.3"
+diff --git a/helix-tui/src/buffer.rs b/helix-tui/src/buffer.rs
+index a2ccc3a1d8d3..26391c63589a 100644
+--- a/helix-tui/src/buffer.rs
++++ b/helix-tui/src/buffer.rs
+@@ -6,7 +6,7 @@ use std::cmp::min;
+ use unicode_segmentation::UnicodeSegmentation;
+ 
+ pub const SYMBOL_CAPACITY: usize = 28;
+-pub type Symbol = arrayvec::ArrayString<SYMBOL_CAPACITY>;
++pub type Symbol = helix_stdx::string::StackString;
+ 
+ /// One cell of the terminal. Contains one stylized grapheme.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -123,7 +123,7 @@ impl Cell {
+ impl Default for Cell {
+     fn default() -> Cell {
+         Cell {
+-            symbol: Symbol::from(" ").unwrap(),
++            symbol: Symbol::from(" "),
+             width: 1,
+             fg: Color::Reset,
+             bg: Color::Reset,
+@@ -1082,7 +1082,7 @@ mod tests {
+         for symbol in test_cases {
+             let mut cell = Cell::default();
+             cell.set_symbol(symbol);
+-            assert_eq!(cell.symbol, *symbol);
++            assert_eq!(cell.symbol, symbol);
+         }
+     }
+ 
+diff --git a/helix-tui/src/text.rs b/helix-tui/src/text.rs
+index a9c36503abb5..78d057465e0a 100644
+--- a/helix-tui/src/text.rs
++++ b/helix-tui/src/text.rs
+@@ -49,6 +49,7 @@
+ use helix_core::line_ending::str_is_line_ending;
+ use helix_core::unicode::width::UnicodeWidthStr;
+ use helix_view::graphics::Style;
++use helix_view::icons::Icon;
+ use std::borrow::Cow;
+ use unicode_segmentation::UnicodeSegmentation;
+ 
+@@ -97,13 +98,14 @@ impl<'a> Span<'a> {
+     /// Span::styled("My text", style);
+     /// Span::styled(String::from("My text"), style);
+     /// ```
+-    pub fn styled<T>(content: T, style: Style) -> Span<'a>
++    pub fn styled<T, S>(content: T, style: S) -> Span<'a>
+     where
+         T: Into<Cow<'a, str>>,
++        S: Into<Style>,
+     {
+         Span {
+             content: content.into(),
+-            style,
++            style: style.into(),
+         }
+     }
+ 
+@@ -208,6 +210,13 @@ impl<'a> From<Cow<'a, str>> for Span<'a> {
+     }
+ }
+ 
++impl From<Icon> for Span<'_> {
++    #[inline]
++    fn from(icon: Icon) -> Self {
++        Span::styled(icon.to_string(), icon.style())
++    }
++}
++
+ /// A string composed of clusters of graphemes, each with their own style.
+ #[derive(Debug, Default, Clone, PartialEq, Eq)]
+ pub struct Spans<'a>(pub Vec<Span<'a>>);
+diff --git a/helix-view/Cargo.toml b/helix-view/Cargo.toml
+index 1139ee061c2b..8a0e4e565578 100644
+--- a/helix-view/Cargo.toml
++++ b/helix-view/Cargo.toml
+@@ -60,6 +60,8 @@ parking_lot.workspace = true
+ thiserror.workspace = true
+ 
+ kstring = "2.0"
++smartstring.workspace = true
++hashbrown.workspace = true
+ 
+ [target.'cfg(windows)'.dependencies]
+ clipboard-win = { version = "5.4", features = ["std"] }
+diff --git a/helix-view/src/annotations/diagnostics.rs b/helix-view/src/annotations/diagnostics.rs
+index dc1414625124..259ba59eb5b7 100644
+--- a/helix-view/src/annotations/diagnostics.rs
++++ b/helix-view/src/annotations/diagnostics.rs
+@@ -2,6 +2,7 @@ use helix_core::diagnostic::Severity;
+ use helix_core::doc_formatter::{FormattedGrapheme, TextFormat};
+ use helix_core::text_annotations::LineAnnotation;
+ use helix_core::{softwrapped_dimensions, Diagnostic, Position};
++use helix_stdx::string::StackString;
+ use serde::{Deserialize, Serialize};
+ 
+ use crate::Document;
+@@ -98,7 +99,7 @@ impl InlineDiagnosticsConfig {
+             tab_width: 4,
+             max_wrap: self.max_wrap.min(width / 4),
+             max_indent_retain: 0,
+-            wrap_indicator: "".into(),
++            wrap_indicator: StackString::new(),
+             wrap_indicator_highlight: None,
+             viewport_width: width,
+             soft_wrap_at_text_width: true,
+diff --git a/helix-view/src/document.rs b/helix-view/src/document.rs
+index 311188eb42e9..c19b6dd05516 100644
+--- a/helix-view/src/document.rs
++++ b/helix-view/src/document.rs
+@@ -1,5 +1,5 @@
+ use anyhow::{anyhow, bail, Error};
+-use arc_swap::access::DynAccess;
++use arc_swap::access::{DynAccess, DynGuard};
+ use arc_swap::ArcSwap;
+ use futures_util::future::BoxFuture;
+ use futures_util::FutureExt;
+@@ -15,6 +15,7 @@ use helix_core::text_annotations::{InlineAnnotation, Overlay};
+ use helix_event::TaskController;
+ use helix_lsp::util::lsp_pos_to_pos;
+ use helix_stdx::faccess::{copy_metadata, readonly};
++use helix_stdx::string::StackString;
+ use helix_vcs::{DiffHandle, DiffProviderRegistry};
+ use once_cell::sync::OnceCell;
+ use thiserror;
+@@ -43,6 +44,7 @@ use helix_core::{
+     ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax, Transaction,
+ };
+ 
++use crate::icons::{Icons, ICONS};
+ use crate::{
+     editor::Config,
+     events::{DocumentDidChange, SelectionDidChange},
+@@ -2345,7 +2347,9 @@ impl Document {
+ 
+     pub fn text_format(&self, mut viewport_width: u16, theme: Option<&Theme>) -> TextFormat {
+         let config = self.config.load();
++
+         let text_width = self.text_width();
++
+         let mut soft_wrap_at_text_width = self
+             .language_config()
+             .and_then(|config| {
+@@ -2356,47 +2360,62 @@ impl Document {
+             })
+             .or(config.soft_wrap.wrap_at_text_width)
+             .unwrap_or(false);
++
+         if soft_wrap_at_text_width {
+-            // if the viewport is smaller than the specified
+-            // width then this setting has no effcet
++            // If the viewport is smaller than the specified
++            // width then this setting has no effect.
+             if text_width >= viewport_width as usize {
+                 soft_wrap_at_text_width = false;
+             } else {
+                 viewport_width = text_width as u16;
+             }
+         }
+-        let config = self.config.load();
++
+         let editor_soft_wrap = &config.soft_wrap;
++
+         let language_soft_wrap = self
+             .language
+             .as_ref()
+             .and_then(|config| config.soft_wrap.as_ref());
++
+         let enable_soft_wrap = language_soft_wrap
+             .and_then(|soft_wrap| soft_wrap.enable)
+             .or(editor_soft_wrap.enable)
+             .unwrap_or(false);
++
+         let max_wrap = language_soft_wrap
+             .and_then(|soft_wrap| soft_wrap.max_wrap)
+             .or(config.soft_wrap.max_wrap)
+             .unwrap_or(20);
++
+         let max_indent_retain = language_soft_wrap
+             .and_then(|soft_wrap| soft_wrap.max_indent_retain)
+             .or(editor_soft_wrap.max_indent_retain)
+             .unwrap_or(40);
++
+         let wrap_indicator = language_soft_wrap
+-            .and_then(|soft_wrap| soft_wrap.wrap_indicator.clone())
+-            .or_else(|| config.soft_wrap.wrap_indicator.clone())
+-            .unwrap_or_else(|| "↪ ".into());
++            .and_then(|soft_wrap| {
++                soft_wrap
++                    .wrap_indicator
++                    .as_ref()
++                    .and_then(|indicator| StackString::try_from(indicator.as_str()).ok())
++            })
++            .unwrap_or_else(|| {
++                let icons: DynGuard<Icons> = ICONS.load();
++                icons.ui().r#virtual().wrap().glyph()
++            });
++
+         let tab_width = self.tab_width() as u16;
++
+         TextFormat {
+             soft_wrap: enable_soft_wrap && viewport_width > 10,
+             tab_width,
+             max_wrap: max_wrap.min(viewport_width / 4),
+             max_indent_retain: max_indent_retain.min(viewport_width * 2 / 5),
+-            // avoid spinning forever when the window manager
+-            // sets the size to something tiny
++            // Avoid spinning forever when the window
++            // manager sets the size to something tiny
+             viewport_width,
+-            wrap_indicator: wrap_indicator.into_boxed_str(),
++            wrap_indicator,
+             wrap_indicator_highlight: theme
+                 .and_then(|theme| theme.find_highlight("ui.virtual.wrap")),
+             soft_wrap_at_text_width,
+diff --git a/helix-view/src/editor.rs b/helix-view/src/editor.rs
+index adced1884f6a..f9e19ab1d54b 100644
+--- a/helix-view/src/editor.rs
++++ b/helix-view/src/editor.rs
+@@ -678,7 +678,6 @@ pub struct StatusLineConfig {
+     pub left: Vec<StatusLineElement>,
+     pub center: Vec<StatusLineElement>,
+     pub right: Vec<StatusLineElement>,
+-    pub separator: String,
+     pub mode: ModeConfig,
+     pub diagnostics: Vec<Severity>,
+     pub workspace_diagnostics: Vec<Severity>,
+@@ -704,7 +703,6 @@ impl Default for StatusLineConfig {
+                 E::Position,
+                 E::FileEncoding,
+             ],
+-            separator: String::from("│"),
+             mode: ModeConfig::default(),
+             diagnostics: vec![Severity::Warning, Severity::Error],
+             workspace_diagnostics: vec![Severity::Warning, Severity::Error],
+@@ -932,14 +930,12 @@ impl std::str::FromStr for GutterType {
+ #[serde(default)]
+ pub struct WhitespaceConfig {
+     pub render: WhitespaceRender,
+-    pub characters: WhitespaceCharacters,
+ }
+ 
+ impl Default for WhitespaceConfig {
+     fn default() -> Self {
+         Self {
+             render: WhitespaceRender::Basic(WhitespaceRenderValue::None),
+-            characters: WhitespaceCharacters::default(),
+         }
+     }
+ }
+@@ -1065,30 +1061,6 @@ where
+     }
+ }
+ 
+-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+-#[serde(default)]
+-pub struct WhitespaceCharacters {
+-    pub space: char,
+-    pub nbsp: char,
+-    pub nnbsp: char,
+-    pub tab: char,
+-    pub tabpad: char,
+-    pub newline: char,
+-}
+-
+-impl Default for WhitespaceCharacters {
+-    fn default() -> Self {
+-        Self {
+-            space: '·',   // U+00B7
+-            nbsp: '⍽',    // U+237D
+-            nnbsp: '␣',   // U+2423
+-            tab: '→',     // U+2192
+-            newline: '⏎', // U+23CE
+-            tabpad: ' ',
+-        }
+-    }
+-}
+-
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(default, rename_all = "kebab-case")]
+ pub struct IndentGuidesConfig {
+@@ -1299,10 +1271,10 @@ pub struct Editor {
+     pub theme_loader: Arc<theme::Loader>,
+     /// last_theme is used for theme previews. We store the current theme here,
+     /// and if previewing is cancelled, we can return to it.
+-    pub last_theme: Option<Theme>,
++    pub last_theme: Option<Arc<Theme>>,
+     /// The currently applied editor theme. While previewing a theme, the previewed theme
+     /// is set here.
+-    pub theme: Theme,
++    pub theme: Arc<Theme>,
+ 
+     /// The primary Selection prior to starting a goto_line_number preview. This is
+     /// restored when the preview is aborted, or added to the jumplist when it is
+@@ -1437,7 +1409,7 @@ impl Editor {
+             selected_register: None,
+             macro_recording: None,
+             macro_replaying: Vec::new(),
+-            theme: theme_loader.default(),
++            theme: Arc::from(theme_loader.default()),
+             language_servers,
+             diagnostics: Diagnostics::new(),
+             diff_providers: DiffProviderRegistry::default(),
+@@ -1578,15 +1550,15 @@ impl Editor {
+         Ok(())
+     }
+ 
+-    pub fn set_theme_preview(&mut self, theme: Theme) -> anyhow::Result<()> {
++    pub fn set_theme_preview(&mut self, theme: Arc<Theme>) -> anyhow::Result<()> {
+         self.set_theme_impl(theme, ThemeAction::Preview)
+     }
+ 
+-    pub fn set_theme(&mut self, theme: Theme) -> anyhow::Result<()> {
++    pub fn set_theme(&mut self, theme: Arc<Theme>) -> anyhow::Result<()> {
+         self.set_theme_impl(theme, ThemeAction::Set)
+     }
+ 
+-    fn set_theme_impl(&mut self, theme: Theme, preview: ThemeAction) -> anyhow::Result<()> {
++    fn set_theme_impl(&mut self, theme: Arc<Theme>, preview: ThemeAction) -> anyhow::Result<()> {
+         // `ui.selection` is the only scope required to be able to render a theme.
+         if theme.find_highlight_exact("ui.selection").is_none() {
+             bail!("Invalid theme: `ui.selection` required");
+@@ -1598,7 +1570,7 @@ impl Editor {
+         match preview {
+             ThemeAction::Preview => {
+                 let last_theme = std::mem::replace(&mut self.theme, theme);
+-                // only insert on first preview: this will be the last theme the user has saved
++                // Only insert on first preview: this will be the last theme the user has saved
+                 self.last_theme.get_or_insert(last_theme);
+             }
+             ThemeAction::Set => {
+diff --git a/helix-view/src/graphics.rs b/helix-view/src/graphics.rs
+index e4fa3e38a5bd..366d37ea1895 100644
+--- a/helix-view/src/graphics.rs
++++ b/helix-view/src/graphics.rs
+@@ -751,6 +751,20 @@ impl Style {
+     }
+ }
+ 
++impl From<Color> for Style {
++    #[inline]
++    fn from(color: Color) -> Self {
++        Self::new().fg(color)
++    }
++}
++
++impl From<Option<Color>> for Style {
++    #[inline]
++    fn from(color: Option<Color>) -> Self {
++        color.map_or_else(Self::default, |color| Self::new().fg(color))
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/helix-view/src/gutter.rs b/helix-view/src/gutter.rs
+index 176890ca223e..4e8d46e39e19 100644
+--- a/helix-view/src/gutter.rs
++++ b/helix-view/src/gutter.rs
+@@ -5,6 +5,7 @@ use helix_core::syntax::config::LanguageServerFeature;
+ use crate::{
+     editor::GutterType,
+     graphics::{Style, UnderlineStyle},
++    icons::ICONS,
+     Document, Editor, Theme, View,
+ };
+ 
+@@ -62,12 +63,15 @@ pub fn diagnostic<'doc>(
+ 
+     Box::new(
+         move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
++            use helix_core::diagnostic::Severity;
++
+             if !first_visual_line {
+                 return None;
+             }
+-            use helix_core::diagnostic::Severity;
++
+             let first_diag_idx_maybe_on_line = diagnostics.partition_point(|d| d.line < line);
+-            let diagnostics_on_line = diagnostics[first_diag_idx_maybe_on_line..]
++
++            diagnostics[first_diag_idx_maybe_on_line..]
+                 .iter()
+                 .take_while(|d| {
+                     d.line == line
+@@ -75,16 +79,27 @@ pub fn diagnostic<'doc>(
+                             doc.language_servers_with_feature(LanguageServerFeature::Diagnostics)
+                                 .any(|ls| ls.id() == id)
+                         })
+-                });
+-            diagnostics_on_line.max_by_key(|d| d.severity).map(|d| {
+-                write!(out, "●").ok();
+-                match d.severity {
+-                    Some(Severity::Error) => error,
+-                    Some(Severity::Warning) | None => warning,
+-                    Some(Severity::Info) => info,
+-                    Some(Severity::Hint) => hint,
+-                }
+-            })
++                })
++                .max_by_key(|d| d.severity)
++                .map(move |d| {
++                    let icons = ICONS.load();
++                    let (style, symbol) = match d.severity {
++                        Some(Severity::Warning) => (warning, icons.diagnostic().warning()),
++                        Some(Severity::Error) => (error, icons.diagnostic().error()),
++                        Some(Severity::Info) => (info, icons.diagnostic().info()),
++                        Some(Severity::Hint) | None => (hint, icons.diagnostic().hint()),
++                    };
++                    // NOTE: `GutterType::width` is hard_coded to `1`.
++                    //
++                    // QUESTION:
++                    // Unsure if this means that only one width icons can be
++                    // used, or if this is just for spaces?
++                    //
++                    // For now we will strip any padding and see from there.
++                    write!(out, "{}", symbol.with_no_padding()).unwrap();
++
++                    style
++                })
+         },
+     )
+ }
+@@ -99,10 +114,13 @@ pub fn diff<'doc>(
+     let added = theme.get("diff.plus.gutter");
+     let deleted = theme.get("diff.minus.gutter");
+     let modified = theme.get("diff.delta.gutter");
++
+     if let Some(diff_handle) = doc.diff_handle() {
+         let hunks = diff_handle.load();
++
+         let mut hunk_i = 0;
+         let mut hunk = hunks.nth_hunk(hunk_i);
++
+         Box::new(
+             move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+                 // truncating the line is fine here because we don't compute diffs
+@@ -121,18 +139,21 @@ pub fn diff<'doc>(
+                     return None;
+                 }
+ 
++                let icons = ICONS.load();
++
+                 let (icon, style) = if hunk.is_pure_insertion() {
+-                    ("▍", added)
++                    (icons.ui().gutter().added(), added)
+                 } else if hunk.is_pure_removal() {
+                     if !first_visual_line {
+                         return None;
+                     }
+-                    ("▔", deleted)
++                    (icons.ui().gutter().removed(), deleted)
+                 } else {
+-                    ("▍", modified)
++                    (icons.ui().gutter().modified(), modified)
+                 };
+ 
+-                write!(out, "{}", icon).unwrap();
++                write!(out, "{icon}").unwrap();
++
+                 Some(style)
+             },
+         )
+@@ -266,8 +287,16 @@ pub fn breakpoints<'doc>(
+                 breakpoint_style
+             };
+ 
+-            let sym = if breakpoint.verified { "●" } else { "◯" };
+-            write!(out, "{}", sym).unwrap();
++            let icons = ICONS.load();
++
++            let icon = if breakpoint.verified {
++                icons.dap().verified()
++            } else {
++                icons.dap().unverified()
++            };
++
++            write!(out, "{icon}").unwrap();
++
+             Some(style)
+         },
+     )
+@@ -302,8 +331,10 @@ fn execution_pause_indicator<'doc>(
+                 return None;
+             }
+ 
+-            let sym = "▶";
+-            write!(out, "{}", sym).unwrap();
++            let icons = ICONS.load();
++
++            write!(out, "{}", icons.dap().play()).unwrap();
++
+             Some(style)
+         },
+     )
+diff --git a/helix-view/src/icons.rs b/helix-view/src/icons.rs
+new file mode 100644
+index 000000000000..bb570618d71b
+--- /dev/null
++++ b/helix-view/src/icons.rs
+@@ -0,0 +1,1673 @@
++use crate::{
++    graphics::{Modifier, UnderlineStyle},
++    theme::{Color, Style},
++    Theme,
++};
++use arc_swap::ArcSwap;
++use hashbrown::HashMap;
++use helix_core::unicode::width::UnicodeWidthStr;
++use helix_stdx::string::StackString;
++use once_cell::sync::Lazy;
++use serde::{de::value::MapAccessDeserializer, Deserialize};
++use smartstring::LazyCompact;
++use std::{
++    fmt::{Display, Write},
++    path::Path,
++    str::FromStr,
++    sync::LazyLock,
++};
++
++type SmartString = smartstring::SmartString<LazyCompact>;
++
++/// Centralized location for icons that can be used throughout the UI.
++pub static ICONS: Lazy<ArcSwap<Icons>> = Lazy::new(ArcSwap::default);
++
++#[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone)]
++#[serde(default, deny_unknown_fields)]
++pub struct Icons {
++    fs: Fs,
++    kind: Kind,
++    diagnostic: Diagnostic,
++    vcs: Vcs,
++    dap: Dap,
++    ui: Ui,
++}
++
++impl Icons {
++    #[inline]
++    #[must_use]
++    pub const fn fs(&self) -> &Fs {
++        &self.fs
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn kind(&self) -> &Kind {
++        &self.kind
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn diagnostic(&self) -> &Diagnostic {
++        &self.diagnostic
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn vcs(&self) -> &Vcs {
++        &self.vcs
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn dap(&self) -> &Dap {
++        &self.dap
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn ui(&self) -> &Ui {
++        &self.ui
++    }
++}
++
++macro_rules! icon {
++    ( glyph: $glyph:expr, fg: $fg:expr, padding: [$p_left:expr, $p_right:expr] ) => {
++        Icon {
++            glyph: Some(StackString::from($glyph)),
++            style: Some(Style::from(Color::from_hex($fg).unwrap())),
++            padding: Some(Padding {
++                left: $p_left,
++                right: $p_right,
++            }),
++            is_user_overridden: false,
++        }
++    };
++    ( glyph: $glyph:expr, fg: $fg:expr ) => {
++        Icon {
++            glyph: Some(StackString::from($glyph)),
++            style: Some(Color::from_hex($fg).unwrap().into()),
++            padding: None,
++            is_user_overridden: false,
++        }
++    };
++    ( glyph: $glyph:expr, padding: [$p_left:expr, $p_right:expr] ) => {
++        Icon {
++            glyph: Some(StackString::from($glyph)),
++            style: None,
++            padding: Some(Padding {
++                left: $p_left,
++                right: $p_right,
++            }),
++            is_user_overridden: false,
++        }
++    };
++    ( glyph: $glyph:expr ) => {
++        Icon {
++            glyph: Some(StackString::from($glyph)),
++            style: None,
++            padding: None,
++            is_user_overridden: false,
++        }
++    };
++    ( $glyph:expr ) => {
++        Icon {
++            glyph: Some(StackString::from($glyph)),
++            style: None,
++            padding: None,
++            is_user_overridden: false,
++        }
++    };
++}
++
++macro_rules! icons {
++    ( $( $key:literal => { $($body:tt)* } ),* $(,)? ) => {{
++        HashMap::from_iter(
++            vec![
++                $(
++                    (SmartString::from($key), icon!( $($body)* )),
++                )*
++            ]
++        )
++    }};
++}
++
++#[derive(Debug, Default, Eq, Clone, Copy)]
++pub struct Icon {
++    glyph: Option<StackString>,
++    style: Option<Style>,
++    padding: Option<Padding>,
++    is_user_overridden: bool,
++}
++
++impl Icon {
++    #[inline]
++    #[must_use]
++    pub fn glyph(&self) -> StackString {
++        // WARN:
++        // This is done so that the padding can be applied to the glyph.
++        let mut glyph = StackString::new();
++        write!(&mut glyph, "{self}").unwrap();
++        glyph
++    }
++
++    #[inline]
++    pub fn set_glyph(&mut self, glyph: &'static str) {
++        self.glyph = Some(StackString::from(glyph));
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn style(&self) -> Style {
++        self.style.unwrap_or_default()
++    }
++
++    #[inline]
++    pub fn set_style(&mut self, style: Style) {
++        self.style = Some(style);
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn width(&self) -> u16 {
++        if let Some(Padding { left, right }) = self.padding {
++            left as u16 + self.glyph.unwrap_or_default().width() as u16 + right as u16
++        } else {
++            self.glyph().width() as u16
++        }
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn is_empty(&self) -> bool {
++        self.glyph.unwrap_or_default().is_empty()
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn from(glyph: &'static str) -> Self {
++        Self {
++            glyph: Some(StackString::from(glyph)),
++            style: None,
++            padding: None,
++            is_user_overridden: false,
++        }
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn with_padding(mut self, left: u8, right: u8) -> Self {
++        self.padding = Some(Padding { left, right });
++        self
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn with_no_padding(self) -> Self {
++        self.with_padding(0, 0)
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn is_user_overridden(&self) -> bool {
++        self.is_user_overridden
++    }
++
++    #[inline]
++    #[must_use]
++    fn patch_from_user_override(mut self, other: Self) -> Self {
++        self.glyph = other.glyph.or(self.glyph);
++        if let Some(other) = other.style {
++            if let Some(style) = self.style {
++                self.style = Some(style.patch(other));
++            } else {
++                self.style = Some(other);
++            }
++        }
++        self.padding = other.padding.or(self.padding);
++        self
++    }
++}
++
++impl Display for Icon {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        let padding = self.padding.unwrap_or_default();
++
++        for _ in 0..padding.left {
++            write!(f, " ")?;
++        }
++
++        write!(f, "{}", self.glyph.unwrap_or_default())?;
++
++        for _ in 0..padding.right {
++            write!(f, " ")?;
++        }
++
++        Ok(())
++    }
++}
++
++#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
++struct Padding {
++    left: u8,
++    right: u8,
++}
++
++impl PartialEq<str> for Icon {
++    fn eq(&self, other: &str) -> bool {
++        self.glyph().as_str() == other
++    }
++}
++
++impl PartialEq for Icon {
++    fn eq(&self, other: &Self) -> bool {
++        let Self {
++            glyph,
++            style,
++            padding,
++            is_user_overridden: _,
++        } = self;
++
++        *padding == other.padding && *style == other.style && *glyph == other.glyph
++    }
++}
++
++impl<'de> Deserialize<'de> for Icon {
++    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
++    where
++        D: serde::Deserializer<'de>,
++    {
++        deserializer.deserialize_any(IconVisitor)
++    }
++}
++
++struct IconVisitor;
++
++impl<'de> serde::de::Visitor<'de> for IconVisitor {
++    type Value = Icon;
++
++    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
++        write!(
++            formatter,
++            "a string glyph or a map with 'glyph, 'fg', 'bg', 'padding', 'underline', or 'modifiers'"
++        )
++    }
++
++    fn visit_str<E>(self, glyph: &str) -> Result<Self::Value, E>
++    where
++        E: serde::de::Error,
++    {
++        Ok(Icon {
++            glyph: Some(StackString::try_from(glyph).map_err(|err| serde::de::Error::custom(err))?),
++            style: None,
++            padding: None,
++            is_user_overridden: true,
++        })
++    }
++
++    fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
++    where
++        M: serde::de::MapAccess<'de>,
++    {
++        #[derive(Deserialize)]
++        struct UserIcon {
++            glyph: Option<StackString>,
++            fg: Option<StackString>,
++            bg: Option<StackString>,
++            modifiers: Option<Vec<String>>,
++            padding: Option<Padding>,
++            underline: Option<Underline>,
++        }
++
++        #[derive(serde::Deserialize)]
++        struct Underline {
++            style: StackString,
++            color: StackString,
++        }
++
++        let icon = UserIcon::deserialize(MapAccessDeserializer::new(map))?;
++
++        let mut style: Option<Style> = None;
++
++        if let Some(fg) = icon
++            .fg
++            .map(|hex| Color::from_hex(&hex))
++            .transpose()
++            .map_err(|err| serde::de::Error::custom(err.to_string()))?
++        {
++            if let Some(s) = style {
++                style = Some(s.fg(fg));
++            } else {
++                style = Some(Style::default().fg(fg));
++            }
++        }
++
++        if let Some(bg) = icon
++            .bg
++            .map(|hex| Color::from_hex(&hex))
++            .transpose()
++            .map_err(|err| serde::de::Error::custom(err.to_string()))?
++        {
++            if let Some(s) = style {
++                style = Some(s.bg(bg));
++            } else {
++                style = Some(Style::default().bg(bg));
++            }
++        }
++
++        if let Some(options) = icon.modifiers {
++            for option in options {
++                let modifier = Modifier::from_str(&option)
++                    .map_err(|err| serde::de::Error::custom(err.to_string()))?;
++
++                if let Some(s) = style {
++                    style = Some(s.add_modifier(modifier));
++                } else {
++                    style = Some(Style::default().add_modifier(modifier));
++                }
++            }
++        }
++
++        if let Some(underline) = icon.underline {
++            let color = Color::from_hex(underline.color.as_str())
++                .map_err(|err| serde::de::Error::custom(err.to_string()))?;
++
++            if let Some(s) = style {
++                style = Some(s.underline_color(color));
++            } else {
++                style = Some(Style::default().underline_color(color));
++            }
++
++            style = style.map(|style| style.underline_color(color));
++
++            let underline_style = UnderlineStyle::from_str(&underline.style)
++                .map_err(|err| serde::de::Error::custom(err.to_string()))?;
++
++            if let Some(s) = style {
++                style = Some(s.underline_style(underline_style));
++            } else {
++                style = Some(Style::default().underline_style(underline_style));
++            }
++        }
++
++        Ok(Icon {
++            glyph: icon.glyph,
++            style,
++            padding: icon.padding,
++            is_user_overridden: true,
++        })
++    }
++}
++
++static KIND: LazyLock<Kind> = LazyLock::new(|| Kind {
++    enable: false,
++    icons: icons! {
++        "file" => { glyph: "", padding: [1, 2] },
++        "folder" => { glyph: "󰉋", padding: [1, 2] },
++        "module" => { glyph: "", padding: [1, 2] },
++        "namespace" => { glyph: "", padding: [1, 2] },
++        "package" => { glyph: "", padding: [1, 2] },
++        "class" => { glyph: "", padding: [1, 2] },
++        "method" => { glyph: "", padding: [1, 2] },
++        "property" => { glyph: "", padding: [1, 2] },
++        "field" => { glyph: "", padding: [1, 2] },
++        "constructor" => { glyph: "", padding: [1, 2] },
++        "enum" => { glyph: "", padding: [1, 2] },
++        "interface" => { glyph: "", padding: [1, 2] },
++        "function" => { glyph: "", padding: [1, 2] },
++        "variable" => { glyph: "", padding: [1, 2] },
++        "constant" => { glyph: "", padding: [1, 2] },
++        "string" => { glyph: "", padding: [1, 2] },
++        "number" => { glyph: "", padding: [1, 2] },
++        "boolean" => { glyph: "", padding: [1, 2] },
++        "array" => { glyph: "", padding: [1, 2] },
++        "object" => { glyph: "", padding: [1, 2] },
++        "key" => { glyph: "", padding: [1, 2] },
++        "null" => { glyph: "󰟢", padding: [1, 2] },
++        "enum_member" => { glyph: "", padding: [1, 2] },
++        "struct" => { glyph: "", padding: [1, 2] },
++        "event" => { glyph: "", padding: [1, 1] },
++        "operator" => { glyph: "", padding: [1, 2] },
++        "type_param" => { glyph: "", padding: [1, 2] },
++        "keyword" => { glyph: "", padding: [1, 2] },
++        "color" => { glyph: "■", padding: [0, 0] },
++        "value" => { glyph: "󰎠", padding: [1, 2] },
++        "snippet" => { glyph: "", padding: [1, 2] },
++        "reference" => { glyph: "", padding: [1, 2] },
++        "text" => { glyph: "", padding: [1, 2] },
++        "unit" => { glyph: "", padding: [1, 2] },
++        "word" => { glyph: "", padding: [1, 2] },
++        "spellcheck" => { glyph: "󰓆", padding: [1, 2] },
++        "link" => { glyph: "", padding: [1, 2] },
++    },
++});
++
++#[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone)]
++pub struct Kind {
++    enable: bool,
++    #[serde(flatten)]
++    icons: HashMap<SmartString, Icon>,
++}
++
++impl Kind {
++    #[inline]
++    #[must_use]
++    pub fn get(&self, kind: &str) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.icons
++            .get(kind)
++            .or_else(|| KIND.icons.get(kind))
++            .copied()
++    }
++
++    #[inline]
++    #[must_use]
++    #[expect(clippy::missing_panics_doc)]
++    pub fn color(&self) -> Icon {
++        self.icons
++            .get("color")
++            .or_else(|| KIND.icons.get("color"))
++            .copied()
++            .expect("`color` should be populated in the Lazy impl")
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Diagnostic {
++    hint: Option<Icon>,
++    info: Option<Icon>,
++    warning: Option<Icon>,
++    error: Option<Icon>,
++}
++
++impl Diagnostic {
++    #[inline]
++    #[must_use]
++    pub fn hint(&self) -> Icon {
++        self.hint
++            .unwrap_or_else(|| icon!(glyph: "○", padding: [1, 1]))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn info(&self) -> Icon {
++        self.info
++            .unwrap_or_else(|| icon!(glyph: "●", padding: [1, 1]))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn warning(&self) -> Icon {
++        self.warning
++            .unwrap_or_else(|| icon!(glyph: "▲", padding: [1, 1]))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn error(&self) -> Icon {
++        self.error
++            .unwrap_or_else(|| icon!(glyph: "■", padding: [1, 1]))
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Vcs {
++    enable: bool,
++    branch: Option<Icon>,
++    added: Option<Icon>,
++    removed: Option<Icon>,
++    ignored: Option<Icon>,
++    modified: Option<Icon>,
++    renamed: Option<Icon>,
++    conflict: Option<Icon>,
++}
++
++impl Vcs {
++    #[inline]
++    #[must_use]
++    pub fn branch(&self) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.branch
++            .or_else(|| Some(icon!(glyph: "", padding: [1, 1])))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn added(&self) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.added
++            .or_else(|| Some(icon!(glyph: "", padding: [1, 2])))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn removed(&self) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.removed
++            .or_else(|| Some(icon!(glyph: "", padding: [1, 2])))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn ignored(&self) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.ignored
++            .or_else(|| Some(icon!(glyph: "", padding: [1, 2])))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn modified(&self) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.modified
++            .or_else(|| Some(icon!(glyph: "", padding: [1, 2])))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn renamed(&self) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.renamed
++            .or_else(|| Some(icon!(glyph: "", padding: [1, 2])))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn conflict(&self) -> Option<Icon> {
++        if !self.enable {
++            return None;
++        }
++
++        self.conflict
++            .or_else(|| Some(icon!(glyph: "", padding: [1, 2])))
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Fs {
++    enable: bool,
++    #[serde(default)]
++    directory: Directory,
++    #[serde(default)]
++    file: File,
++}
++
++impl Fs {
++    #[inline]
++    #[must_use]
++    pub const fn directory(&self) -> Option<&Directory> {
++        if !self.enable {
++            return None;
++        }
++        Some(&self.directory)
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn file(&self) -> Option<&File> {
++        if !self.enable {
++            return None;
++        }
++        Some(&self.file)
++    }
++}
++
++static FILE: LazyLock<File> = LazyLock::new(|| File {
++    filename: icons! {
++        ".dockerignore" => {glyph: "󰡨", fg: "#0096e6", padding: [1, 2] },
++        ".editorconfig" => { glyph: "", padding: [1, 2] },
++        ".env" => { glyph: "", padding: [1, 2] },
++        ".envrc" => { glyph: "", padding: [1, 2] },
++        ".git-blame-ignore-revs" => { glyph: "", fg: "#f15233", padding: [1, 2] },
++        ".gitattributes" => { glyph: "", fg: "#f15233", padding: [1, 2] },
++        ".gitignore" => { glyph: "", fg: "#f15233", padding: [1, 2] },
++        ".gitmodules" => { glyph: "", fg: "#f15233", padding: [1, 2] },
++        ".ignore" => {glyph: "󰈉", padding: [1, 2] },
++        ".mailmap" => { glyph: "", padding: [1, 2] },
++        ".prettierignore" => {glyph: "", padding: [1, 2] },
++        ".prettierrc" => {glyph: "", padding: [1, 2] },
++        ".vimrc" => { glyph: "", fg: "#007f00", padding: [1, 2] },
++        "CHANGELOG.md" => { glyph: "", fg: "#7bab43", padding: [1, 2] },
++        "CODE_OF_CONDUCT.md" => { glyph: "", fg: "#f7769d", padding: [1, 2] },
++        "Dockerfile" => {glyph: "󰡨", fg: "#0096e6", padding: [1, 2] },
++        "Justfile" => { glyph : "󰖷", fg: "#888888", padding: [1, 2] },
++        "LICENSE" => { glyph: "", fg: "#D0BF41", padding: [1, 1] },
++        "LICENSE-AGPL" => { glyph: "", fg: "#D0BF41", padding: [1, 1] },
++        "LICENSE-APACHE" => { glyph: "", fg: "#D0BF41", padding: [1, 1] },
++        "LICENSE-GPL" => { glyph: "", fg: "#D0BF41", padding: [1, 1] },
++        "LICENSE-MIT" => { glyph: "", fg: "#D0BF41", padding: [1, 1] },
++        "LICENSE-WHATWG" => { glyph: "", fg: "#D0BF41", padding: [1, 1] },
++        "Makefile" => {glyph: "", padding: [1, 2] },
++        "README" => { glyph: "", fg: "#C8C8C8", padding: [1, 2] },
++        "README.md" => { glyph: "", fg: "#C8C8C8", padding: [1, 2] },
++        "SECURITY.md" => { glyph: "󰒃", fg: "#BEC4C9", padding: [1, 2] },
++        "compose.yaml" => {glyph: "󰡨", fg: "#0096e6", padding: [1, 2] },
++        "docker-compose.yaml" => {glyph: "󰡨", fg: "#0096e6", padding: [1, 2] },
++        "justfile" => { glyph : "󰖷", fg: "#888888", padding: [1, 2] },
++        "zig.build.zon" => { glyph : "", fg: "#F69A1B", padding: [1, 2] },
++    },
++    extension: icons! {
++        "3gp" => { glyph:  "", fg: "#FD971F", padding: [1, 2] },
++        "3mf" => { glyph: "󰆧", fg: "#888888", padding: [1, 2] },
++        "7z" => { glyph: "", fg: "#ECA517", padding: [1, 2] },
++        "Dockerfile" => { glyph: "󰡨", fg : "#458EE6", padding: [1, 2] },
++        "R" => { glyph: "󰟔", fg: "#2266BA", padding: [1, 2] },
++        "a" => { glyph: "", fg: "#C8C8C8", padding: [1, 2] },
++        "aac" => { glyph: "", fg: "#00AFFF", padding: [1, 2] },
++        "ada" => { glyph: "", fg: "#599EFF", padding: [1, 2] },
++        "adb" => { glyph: "", fg: "#599EFF", padding: [1, 2] },
++        "ads" => { glyph: "", fg: "#A074C4", padding: [1, 2] },
++        "ai" => { glyph: "", fg: "#CBCB41", padding: [1, 2] },
++        "aif" => { glyph: "", fg: "#00AFFF", padding: [1, 2] },
++        "aiff" => { glyph: "", fg: "#00AFFF", padding: [1, 2] },
++        "android" => { glyph: "", fg: "#34A853", padding: [1, 2] },
++        "ape" => { glyph: "", fg: "#00AFFF", padding: [1, 2] },
++        "apk" => { glyph: "", fg: "#34A853", padding: [1, 2] },
++        "apl" => { glyph: "", fg: "#24A148", padding: [1, 2] },
++        "app" => { glyph: "", fg: "#9F0500", padding: [1, 2] },
++        "applescript" => { glyph: "", fg: "#6D8085", padding: [1, 2] },
++        "asc" => { glyph: "󰦝", fg: "#576D7F", padding: [1, 2] },
++        "asm" => { glyph: "", fg: "#0091BD", padding: [1, 2] },
++        "ass" => { glyph: "󰨖", fg: "#FFB713", padding: [1, 2] },
++        "astro" => { glyph: "", fg: "#E23F67", padding: [1, 2] },
++        "avif" => { glyph: "", fg: "#A074C4", padding: [1, 2] },
++        "awk" => { glyph: "", fg: "#4D5A5E", padding: [1, 2] },
++        "azcli" => { glyph: "", fg: "#0078D4", padding: [1, 2] },
++        "bak" => { glyph: "󰁯", fg: "#6D8086", padding: [1, 2] },
++        "bash" => { glyph: "", fg: "#89E051", padding: [1, 2] },
++        "bat" => { glyph: "", fg: "#C1F12E", padding: [1, 2] },
++        "bazel" => { glyph: "", fg: "#89E051", padding: [1, 2] },
++        "bib" => { glyph: "󱉟", fg: "#CBCB41", padding: [1, 2] },
++        "bicep" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "bicepparam" => { glyph: "", fg: "#9F74B3", padding: [1, 2] },
++        "bin" => { glyph: "", fg: "#9F0500", padding: [1, 2] },
++        "blade.php" => { glyph: "", fg: "#F05340", padding: [1, 2] },
++        "blend" => { glyph: "󰂫", fg: "#EA7600", padding: [1, 2] },
++        "blp" => { glyph: "󰺾", fg: "#5796E2", padding: [1, 2] },
++        "bmp" => { glyph: "", fg: "#A074C4", padding: [1, 2] },
++        "bqn" => { glyph: "", fg: "#24A148", padding: [1, 2] },
++        "brep" => { glyph: "󰻫", fg: "#839463", padding: [1, 2] },
++        "bz" => { glyph: "", fg: "#ECA517", padding: [1, 2] },
++        "bz2" => { glyph: "", fg: "#ECA517", padding: [1, 2] },
++        "bz3" => { glyph: "", fg: "#ECA517", padding: [1, 2] },
++        "bzl" => { glyph: "", fg: "#89E051", padding: [1, 2] },
++        "c" => { glyph: "", fg: "#599EFF", padding: [1, 2] },
++        "c++" => { glyph: "", fg: "#F34B7D", padding: [1, 2] },
++        "cache" => { glyph: "", fg: "#DDDDDD", padding: [1, 2] },
++        "cast" => { glyph: "", fg: "#FD971F", padding: [1, 2] },
++        "cbl" => { glyph: "", fg: "#005CA5", padding: [1, 2] },
++        "cc" => { glyph: "", fg: "#F34B7D", padding: [1, 2] },
++        "ccm" => { glyph: "", fg: "#F34B7D", padding: [1, 2] },
++        "cfc" => { glyph: "", fg: "#01A4BA", padding: [1, 2] },
++        "cfg" => { glyph: "", fg: "#6D8086", padding: [1, 2] },
++        "cfm" => { glyph: "", fg: "#01A4BA", padding: [1, 2] },
++        "cjs" => { glyph: "", fg: "#CBCB41", padding: [1, 2] },
++        "clj" => { glyph: "", fg: "#8DC149", padding: [1, 2] },
++        "cljc" => { glyph: "", fg: "#8DC149", padding: [1, 2] },
++        "cljd" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "cljs" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "cmake" => { glyph: "", fg: "#DCE3EB", padding: [1, 2] },
++        "cob" => { glyph: "", fg: "#005CA5", padding: [1, 2] },
++        "cobol" => { glyph: "", fg: "#005CA5", padding: [1, 2] },
++        "coffee" => { glyph: "", fg: "#CBCB41", padding: [1, 2] },
++        "conda" => { glyph: "", fg: "#43B02A", padding: [1, 2] },
++        "conf" => { glyph: "", fg: "#6D8086", padding: [1, 2] },
++        "config.ru" => { glyph: "", fg: "#701516", padding: [1, 2] },
++        "cow" => { glyph: "󰆚", fg: "#965824", padding: [1, 2] },
++        "cp" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "cpp" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "cppm" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "cpy" => { glyph: "", fg: "#005CA5", padding: [1, 2] },
++        "cr" => { glyph: "", fg: "#C8C8C8", padding: [1, 2] },
++        "crdownload" => { glyph: "", fg: "#44CDA8", padding: [1, 2] },
++        "cs" => { glyph: "󰌛", fg: "#596706", padding: [1, 2] },
++        "csh" => { glyph: "", fg: "#4D5A5E", padding: [1, 2] },
++        "cshtml" => { glyph: "󱦗", fg: "#512BD4", padding: [1, 2] },
++        "cson" => { glyph: "", fg: "#CBCB41", padding: [1, 2] },
++        "csproj" => { glyph: "󰪮", fg: "#512BD4", padding: [1, 2] },
++        "css" => { glyph: "", fg: "#663399", padding: [1, 2] },
++        "csv" => { glyph: "", fg: "#89E051", padding: [1, 2] },
++        "cts" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "cu" => { glyph: "", fg: "#89E051", padding: [1, 2] },
++        "cue" => { glyph: "󰲹", fg: "#ED95AE", padding: [1, 2] },
++        "cuh" => { glyph: "", fg: "#A074C4", padding: [1, 2] },
++        "cxx" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "cxxm" => { glyph: "", fg: "#519ABA", padding: [1, 2] },
++        "d" => { glyph: "", fg: "#B03931", padding: [1, 2] },
++        "d.ts" => { glyph: "", fg: "#D59855", padding: [1, 2] },
++        "dart" => { glyph: "", fg: "#03589C", padding: [1, 2] },
++        "db" => { glyph: "", fg: "#DAD8D8", padding: [1, 2] },
++        "dconf" => { glyph: "", fg: "#DDDDDD", padding: [1, 2] },
++        "desktop" => { glyph: "", fg: "#563D7C", padding: [1, 2] },
++        "diff" => { glyph: "", fg: "#41535B", padding: [1, 2] },
++        "dll" => { glyph: "", fg: "#4D2C0B", padding: [1, 2] },
++        "doc" => { glyph: "󰈬", fg: "#185ABD", padding: [1, 2] },
++        "dockerignore" => { glyph : "󰡨", fg: "#458EE6", padding: [1, 2] },
++        "docx" => { glyph : "󰈬", fg: "#185ABD", padding: [1, 2] },
++        "dot" => { glyph : "󱁉", fg: "#30638E", padding: [1, 2] },
++        "download" => { glyph : "", fg: "#44CDA8", padding: [1, 2] },
++        "drl" => { glyph : "", fg: "#FFAFAF", padding: [1, 2] },
++        "dropbox" => { glyph : "", fg: "#0061FE", padding: [1, 2] },
++        "dump" => { glyph : "", fg: "#DAD8D8", padding: [1, 2] },
++        "dwg" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "dxf" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "ebook" => { glyph : "", fg: "#EAB16D", padding: [1, 2] },
++        "ebuild" => { glyph : "", fg: "#4C416E", padding: [1, 2] },
++        "edn" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "eex" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "ejs" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "el" => { glyph : "", fg: "#8172BE", padding: [1, 2] },
++        "elc" => { glyph : "", fg: "#8172BE", padding: [1, 2] },
++        "elf" => { glyph : "", fg: "#9F0500", padding: [1, 2] },
++        "elm" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "eln" => { glyph : "", fg: "#8172BE", padding: [1, 2] },
++        "env" => { glyph : "", fg: "#FAF743", padding: [1, 2] },
++        "eot" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "epp" => { glyph : "", fg: "#FFA61A", padding: [1, 2] },
++        "epub" => { glyph : "", fg: "#EAB16D", padding: [1, 2] },
++        "erb" => { glyph : "", fg: "#701516", padding: [1, 2] },
++        "erl" => { glyph : "", fg: "#B83998", padding: [1, 2] },
++        "ex" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "exe" => { glyph : "", fg: "#9F0500", padding: [1, 2] },
++        "exs" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "f#" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "f3d" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "f90" => { glyph : "󱈚", fg: "#734F96", padding: [1, 2] },
++        "fbx" => { glyph : "󰆧", fg: "#888888", padding: [1, 2] },
++        "fcbak" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fcmacro" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fcmat" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fcparam" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fcscript" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fcstd" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fcstd1" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fctb" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fctl" => { glyph : "", fg: "#CB333B", padding: [1, 2] },
++        "fdmdownload" => { glyph : "", fg: "#44CDA8", padding: [1, 2] },
++        "feature" => { glyph : "", fg: "#00A818", padding: [1, 2] },
++        "fish" => { glyph : "", fg: "#4D5A5E", padding: [1, 2] },
++        "flac" => { glyph : "", fg: "#0075AA", padding: [1, 2] },
++        "flc" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "flf" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "fnl" => { glyph : "", fg: "#E0D6BD", padding: [1, 2] },
++        "fodg" => { glyph : "", fg: "#FFFB57", padding: [1, 2] },
++        "fodp" => { glyph : "", fg: "#FE9C45", padding: [1, 2] },
++        "fods" => { glyph : "", fg: "#78FC4E", padding: [1, 2] },
++        "fodt" => { glyph : "", fg: "#2DCBFD", padding: [1, 2] },
++        "frag" => { glyph : "", fg: "#5586A6", padding: [1, 2] },
++        "fs" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "fsi" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "fsscript" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "fsx" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "gcode" => { glyph : "󰐫", fg: "#1471AD", padding: [1, 2] },
++        "gd" => { glyph : "", fg: "#4b8cc0", padding: [1, 2] },
++        "gemspec" => { glyph : "", fg: "#701516", padding: [1, 2] },
++        "geom" => { glyph : "", fg: "#5586A6", padding: [1, 2] },
++        "gif" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "git" => { glyph : "", fg: "#F14C28", padding: [1, 2] },
++        "glb" => { glyph : "", fg: "#FFB13B", padding: [1, 2] },
++        "gleam" => { glyph : "", fg: "#FFAFF3", padding: [1, 2] },
++        "glsl" => { glyph : "", fg: "#5586A6", padding: [1, 2] },
++        "gnumakefile" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "go" => { glyph : "", fg: "#00ADD8", padding: [1, 2] },
++        "godot" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "gpr" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "gql" => { glyph : "", fg: "#E535AB", padding: [1, 2] },
++        "gradle" => { glyph : "", fg: "#005F87", padding: [1, 2] },
++        "graphql" => { glyph : "", fg: "#E535AB", padding: [1, 2] },
++        "gresource" => { glyph : "", fg: "#DDDDDD", padding: [1, 2] },
++        "gv" => { glyph : "󱁉", fg: "#30638E", padding: [1, 2] },
++        "gz" => { glyph : "", fg: "#ECA517", padding: [1, 2] },
++        "h" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "haml" => { glyph : "", fg: "#DFDFDF", padding: [1, 2] },
++        "hbs" => { glyph : "", fg: "#F0772B", padding: [1, 2] },
++        "heex" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "hex" => { glyph : "", fg: "#2E63FF", padding: [1, 2] },
++        "hh" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "hpp" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "hrl" => { glyph : "", fg: "#B83998", padding: [1, 2] },
++        "hs" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "htm" => { glyph : "", fg: "#E34C26", padding: [1, 2] },
++        "html" => { glyph : "", fg: "#E44D26", padding: [1, 2] },
++        "http" => { glyph : "", fg: "#008EC7", padding: [1, 2] },
++        "huff" => { glyph : "󰡘", fg: "#4242C7", padding: [1, 2] },
++        "hurl" => { glyph : "", fg: "#FF0288", padding: [1, 2] },
++        "hx" => { glyph : "", fg: "#EA8220", padding: [1, 2] },
++        "hxx" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "ical" => { glyph : "", fg: "#2B2E83", padding: [1, 2] },
++        "icalendar" => { glyph : "", fg: "#2B2E83", padding: [1, 2] },
++        "ico" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "ics" => { glyph : "", fg: "#2B2E83", padding: [1, 2] },
++        "ifb" => { glyph : "", fg: "#2B2E83", padding: [1, 2] },
++        "ifc" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "ige" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "iges" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "igs" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "image" => { glyph : "", fg: "#D0BEC8", padding: [1, 2] },
++        "img" => { glyph : "", fg: "#D0BEC8", padding: [1, 2] },
++        "import" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "info" => { glyph : "", fg: "#BBBBBB", padding: [1, 2] },
++        "ini" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "ino" => { glyph : "", fg: "#56B6C2", padding: [1, 2] },
++        "ipynb" => { glyph : "", fg: "#F57D01", padding: [1, 2] },
++        "iso" => { glyph : "", fg: "#D0BEC8", padding: [1, 2] },
++        "ixx" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "jar" => { glyph : "", fg: "#ffaf67", padding: [1, 2] },
++        "java" => { glyph : "", fg: "#CC3E44", padding: [1, 2] },
++        "jl" => { glyph : "", fg: "#A270BA", padding: [1, 2] },
++        "jpeg" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "jpg" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "js" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "json" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "json5" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "jsonc" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "jsx" => { glyph : "", fg: "#20C2E3", padding: [1, 2] },
++        "Justfile" => { glyph : "󰖷", fg: "#888888", padding: [1, 2] },
++        "justfile" => { glyph : "󰖷", fg: "#888888", padding: [1, 2] },
++        "jwmrc" => { glyph : "", fg: "#0078CD", padding: [1, 2] },
++        "jxl" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "kbx" => { glyph : "󰯄", fg: "#737672", padding: [1, 2] },
++        "kdb" => { glyph : "", fg: "#529B34", padding: [1, 2] },
++        "kdbx" => { glyph : "", fg: "#529B34", padding: [1, 2] },
++        "kdenlive" => { glyph : "", fg: "#83B8F2", padding: [1, 2] },
++        "kdenlivetitle" => { glyph : "", fg: "#83B8F2", padding: [1, 2] },
++        "kicad_dru" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "kicad_mod" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "kicad_pcb" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "kicad_prl" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "kicad_pro" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "kicad_sch" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "kicad_sym" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "kicad_wks" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "ko" => { glyph : "", fg: "#DCDDD6", padding: [1, 2] },
++        "kpp" => { glyph : "", fg: "#F245FB", padding: [1, 2] },
++        "kra" => { glyph : "", fg: "#F245FB", padding: [1, 2] },
++        "krz" => { glyph : "", fg: "#F245FB", padding: [1, 2] },
++        "ksh" => { glyph : "", fg: "#4D5A5E", padding: [1, 2] },
++        "kt" => { glyph : "", fg: "#7F52FF", padding: [1, 2] },
++        "kts" => { glyph : "", fg: "#7F52FF", padding: [1, 2] },
++        "lck" => { glyph : "", fg: "#BBBBBB", padding: [1, 2] },
++        "leex" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "less" => { glyph : "", fg: "#563D7C", padding: [1, 2] },
++        "lff" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "lhs" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "lib" => { glyph : "", fg: "#4D2C0B", padding: [1, 2] },
++        "LICENSE" => { glyph : "", fg: "#CBCB41", padding: [1, 1] },
++        "license" => { glyph : "", fg: "#CBCB41", padding: [1, 1] },
++        "liquid" => { glyph : "", fg: "#95BF47", padding: [1, 2] },
++        "lock" => { glyph : "", fg: "#BBBBBB", padding: [1, 2] },
++        "log" => { glyph : "󰌱", fg: "#DDDDDD", padding: [1, 2] },
++        "lrc" => { glyph : "󰨖", fg: "#FFB713", padding: [1, 2] },
++        "lua" => { glyph : "", fg: "#51A0CF", padding: [1, 2] },
++        "luac" => { glyph : "", fg: "#51A0CF", padding: [1, 2] },
++        "luau" => { glyph : "", fg: "#00A2FF", padding: [1, 2] },
++        "m" => { glyph : "", fg: "#599EFF", padding: [1, 2] },
++        "m3u" => { glyph : "󰲹", fg: "#ED95AE", padding: [1, 2] },
++        "m3u8" => { glyph : "󰲹", fg: "#ED95AE", padding: [1, 2] },
++        "m4a" => { glyph : "", fg: "#00AFFF", padding: [1, 2] },
++        "m4v" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "magnet" => { glyph : "", fg: "#A51B16", padding: [1, 2] },
++        "makefile" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "markdown" => { glyph : "", fg: "#DDDDDD", padding: [1, 2] },
++        "material" => { glyph : "", fg: "#B83998", padding: [1, 2] },
++        "md" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "md5" => { glyph : "󰕥", fg: "#8C86AF", padding: [1, 2] },
++        "mdx" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "mint" => { glyph : "󰌪", fg: "#87C095", padding: [1, 2] },
++        "mjs" => { glyph : "", fg: "#F1E05A", padding: [1, 2] },
++        "mk" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "mkv" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "ml" => { glyph : "", fg: "#E37933", padding: [1, 2] },
++        "mli" => { glyph : "", fg: "#E37933", padding: [1, 2] },
++        "mm" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "mo" => { glyph : "", fg: "#9772FB", padding: [1, 2] },
++        "mobi" => { glyph : "", fg: "#EAB16D", padding: [1, 2] },
++        "mojo" => { glyph : "", fg: "#FF4C1F", padding: [1, 2] },
++        "mov" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "mp3" => { glyph : "", fg: "#00AFFF", padding: [1, 2] },
++        "mp4" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "mpp" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "msf" => { glyph : "", fg: "#137BE1", padding: [1, 2] },
++        "mts" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "mustache" => { glyph : "", fg: "#E37933", padding: [1, 2] },
++        "nfo" => { glyph : "", fg: "#FFFFCD", padding: [1, 2] },
++        "nim" => { glyph : "", fg: "#F3D400", padding: [1, 2] },
++        "nix" => { glyph : "", fg: "#7EBAE4", padding: [1, 2] },
++        "norg" => { glyph : "", fg: "#4878BE", padding: [1, 2] },
++        "nswag" => { glyph : "", fg: "#85EA2D", padding: [1, 2] },
++        "nu" => { glyph : "", fg: "#3AA675", padding: [1, 2] },
++        "o" => { glyph : "", fg: "#9F0500", padding: [1, 2] },
++        "obj" => { glyph : "󰆧", fg: "#888888", padding: [1, 2] },
++        "odf" => { glyph : "", fg: "#FF5A96", padding: [1, 2] },
++        "odg" => { glyph : "", fg: "#FFFB57", padding: [1, 2] },
++        "odin" => { glyph : "󰟢", fg: "#3882D2", padding: [1, 2] },
++        "odp" => { glyph : "", fg: "#FE9C45", padding: [1, 2] },
++        "ods" => { glyph : "", fg: "#78FC4E", padding: [1, 2] },
++        "odt" => { glyph : "", fg: "#2DCBFD", padding: [1, 2] },
++        "oga" => { glyph : "", fg: "#0075AA", padding: [1, 2] },
++        "ogg" => { glyph : "", fg: "#0075AA", padding: [1, 2] },
++        "ogv" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "ogx" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "opus" => { glyph : "", fg: "#0075AA", padding: [1, 2] },
++        "org" => { glyph : "", fg: "#77AA99", padding: [1, 2] },
++        "otf" => { glyph : "", fg: "#C8C8C8", padding: [1, 2] },
++        "out" => { glyph : "", fg: "#9F0500", padding: [1, 2] },
++        "part" => { glyph : "", fg: "#44CDA8", padding: [1, 2] },
++        "patch" => { glyph : "", fg: "#41535B", padding: [1, 2] },
++        "pck" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "pcm" => { glyph : "", fg: "#0075AA", padding: [1, 2] },
++        "pdf" => { glyph : "", fg: "#B30B00", padding: [1, 2] },
++        "php" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "pl" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "pls" => { glyph : "󰲹", fg: "#ED95AE", padding: [1, 2] },
++        "ply" => { glyph : "󰆧", fg: "#888888", padding: [1, 2] },
++        "pm" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "png" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "po" => { glyph : "", fg: "#2596BE", padding: [1, 2] },
++        "pot" => { glyph : "", fg: "#2596BE", padding: [1, 2] },
++        "pp" => { glyph : "", fg: "#FFA61A", padding: [1, 2] },
++        "ppt" => { glyph : "󰈧", fg: "#CB4A32", padding: [1, 2] },
++        "pptx" => { glyph : "󰈧", fg: "#CB4A32", padding: [1, 2] },
++        "prisma" => { glyph : "", fg: "#f7fafc", padding: [1, 2] },
++        "pro" => { glyph : "", fg: "#E4B854", padding: [1, 2] },
++        "ps1" => { glyph : "󰨊", fg: "#4273CA", padding: [1, 2] },
++        "psb" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "psd" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "psd1" => { glyph : "󰨊", fg: "#6975C4", padding: [1, 2] },
++        "psm1" => { glyph : "󰨊", fg: "#6975C4", padding: [1, 2] },
++        "pub" => { glyph : "󰷖", fg: "#E3C58E", padding: [1, 2] },
++        "pxd" => { glyph : "", fg: "#5AA7E4", padding: [1, 2] },
++        "pxi" => { glyph : "", fg: "#5AA7E4", padding: [1, 2] },
++        "py" => { glyph : "", fg: "#FFBC03", padding: [1, 2] },
++        "pyc" => { glyph : "", fg: "#FFE291", padding: [1, 2] },
++        "pyd" => { glyph : "", fg: "#FFE291", padding: [1, 2] },
++        "pyi" => { glyph : "", fg: "#FFBC03", padding: [1, 2] },
++        "pyo" => { glyph : "", fg: "#FFE291", padding: [1, 2] },
++        "pyw" => { glyph : "", fg: "#5AA7E4", padding: [1, 2] },
++        "pyx" => { glyph : "", fg: "#5AA7E4", padding: [1, 2] },
++        "qm" => { glyph : "", fg: "#2596BE", padding: [1, 2] },
++        "qml" => { glyph : "", fg: "#40CD52", padding: [1, 2] },
++        "qrc" => { glyph : "", fg: "#40CD52", padding: [1, 2] },
++        "qss" => { glyph : "", fg: "#40CD52", padding: [1, 2] },
++        "query" => { glyph : "", fg: "#90A850", padding: [1, 2] },
++        "r" => { glyph : "󰟔", fg: "#2266BA", padding: [1, 2] },
++        "rake" => { glyph : "", fg: "#701516", padding: [1, 2] },
++        "rar" => { glyph : "", fg: "#ECA517", padding: [1, 2] },
++        "rasi" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "razor" => { glyph : "󱦘", fg: "#512BD4", padding: [1, 2] },
++        "rb" => { glyph : "", fg: "#701516", padding: [1, 2] },
++        "res" => { glyph : "", fg: "#CC3E44", padding: [1, 2] },
++        "resi" => { glyph : "", fg: "#F55385", padding: [1, 2] },
++        "rkt" => { glyph : "󰘧", fg: "#9F1D20", padding: [1, 1] },
++        "rlib" => { glyph : "", fg: "#DEA584", padding: [1, 2] },
++        "rmd" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "rproj" => { glyph : "󰗆", fg: "#358A5B", padding: [1, 2] },
++        "rs" => { glyph : "", fg: "#DEA584", padding: [1, 2] },
++        "rss" => { glyph : "", fg: "#FB9D3B", padding: [1, 2] },
++        "s" => { glyph : "", fg: "#0071C5", padding: [1, 2] },
++        "sass" => { glyph : "", fg: "#F55385", padding: [1, 2] },
++        "sbt" => { glyph : "", fg: "#CC3E44", padding: [1, 2] },
++        "sc" => { glyph : "", fg: "#CC3E44", padding: [1, 2] },
++        "scad" => { glyph : "", fg: "#F9D72C", padding: [1, 2] },
++        "scala" => { glyph : "", fg: "#CC3E44", padding: [1, 2] },
++        "scm" => { glyph : "󰘧", fg: "#9F1D20", padding: [1, 1] },
++        "scss" => { glyph : "", fg: "#F55385", padding: [1, 2] },
++        "sh" => { glyph : "", fg: "#4D5A5E", padding: [1, 2] },
++        "sha1" => { glyph : "󰕥", fg: "#8C86AF", padding: [1, 2] },
++        "sha224" => { glyph : "󰕥", fg: "#8C86AF", padding: [1, 2] },
++        "sha256" => { glyph : "󰕥", fg: "#8C86AF", padding: [1, 2] },
++        "sha384" => { glyph : "󰕥", fg: "#8C86AF", padding: [1, 2] },
++        "sha512" => { glyph : "󰕥", fg: "#8C86AF", padding: [1, 2] },
++        "sig" => { glyph : "󰘧", fg: "#E37933", padding: [1, 1] },
++        "signature" => { glyph : "󰘧", fg: "#E37933", padding: [1, 1] },
++        "skp" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "sldasm" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "sldprt" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "slim" => { glyph : "", fg: "#E34C26", padding: [1, 2] },
++        "sln" => { glyph : "", fg: "#854CC7", padding: [1, 2] },
++        "slnx" => { glyph : "", fg: "#854CC7", padding: [1, 2] },
++        "slvs" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "sml" => { glyph : "󰘧", fg: "#E37933", padding: [1, 1] },
++        "so" => { glyph : "", fg: "#DCDDD6", padding: [1, 2] },
++        "sol" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "spec.js" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "spec.jsx" => { glyph : "", fg: "#20C2E3", padding: [1, 2] },
++        "spec.ts" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "spec.tsx" => { glyph : "", fg: "#1354BF", padding: [1, 2] },
++        "spx" => { glyph : "", fg: "#0075AA", padding: [1, 2] },
++        "sql" => { glyph : "", fg: "#DAD8D8", padding: [1, 2] },
++        "sqlite" => { glyph : "", fg: "#DAD8D8", padding: [1, 2] },
++        "sqlite3" => { glyph : "", fg: "#DAD8D8", padding: [1, 2] },
++        "srt" => { glyph : "󰨖", fg: "#FFB713", padding: [1, 2] },
++        "ssa" => { glyph : "󰨖", fg: "#FFB713", padding: [1, 2] },
++        "ste" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "step" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "stl" => { glyph : "󰆧", fg: "#888888", padding: [1, 2] },
++        "stories.js" => { glyph : "", fg: "#FF4785", padding: [1, 2] },
++        "stories.jsx" => { glyph : "", fg: "#FF4785", padding: [1, 2] },
++        "stories.mjs" => { glyph : "", fg: "#FF4785", padding: [1, 2] },
++        "stories.svelte" => { glyph : "", fg: "#FF4785", padding: [1, 2] },
++        "stories.ts" => { glyph : "", fg: "#FF4785", padding: [1, 2] },
++        "stories.tsx" => { glyph : "", fg: "#FF4785", padding: [1, 2] },
++        "stories.vue" => { glyph : "", fg: "#FF4785", padding: [1, 2] },
++        "stp" => { glyph : "󰻫", fg: "#839463", padding: [1, 2] },
++        "strings" => { glyph : "", fg: "#2596BE", padding: [1, 2] },
++        "styl" => { glyph : "", fg: "#8DC149", padding: [1, 2] },
++        "sub" => { glyph : "󰨖", fg: "#FFB713", padding: [1, 2] },
++        "sublime" => { glyph : "", fg: "#E37933", padding: [1, 2] },
++        "suo" => { glyph : "", fg: "#854CC7", padding: [1, 2] },
++        "sv" => { glyph : "󰍛", fg: "#019833", padding: [1, 2] },
++        "svelte" => { glyph : "", fg: "#FF3E00", padding: [1, 2] },
++        "svg" => { glyph : "󰜡", fg: "#FFB13B", padding: [1, 2] },
++        "svgz" => { glyph : "󰜡", fg: "#FFB13B", padding: [1, 2] },
++        "svh" => { glyph : "󰍛", fg: "#019833", padding: [1, 2] },
++        "svx" => { glyph : "", fg: "#FF0042", padding: [1, 2] },
++        "swift" => { glyph : "", fg: "#E37933", padding: [1, 2] },
++        "t" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "tbc" => { glyph : "󰛓", fg: "#1E5CB3", padding: [1, 2] },
++        "tcl" => { glyph : "󰛓", fg: "#1E5CB3", padding: [1, 2] },
++        "templ" => { glyph : "", fg: "#DBBD30", padding: [1, 2] },
++        "terminal" => { glyph : "", fg: "#31B53E", padding: [1, 2] },
++        "test.js" => { glyph : "", fg: "#CBCB41", padding: [1, 2] },
++        "test.jsx" => { glyph : "", fg: "#20C2E3", padding: [1, 2] },
++        "test.ts" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "test.tsx" => { glyph : "", fg: "#1354BF", padding: [1, 2] },
++        "tex" => { glyph : "", fg: "#3D6117", padding: [1, 2] },
++        "tf" => { glyph : "", fg: "#5F43E9", padding: [1, 2] },
++        "tfvars" => { glyph : "", fg: "#5F43E9", padding: [1, 2] },
++        "tgz" => { glyph : "", fg: "#ECA517", padding: [1, 2] },
++        "tmpl" => { glyph : "", fg: "#DBBD30", padding: [1, 2] },
++        "tmux" => { glyph : "", fg: "#14BA19", padding: [1, 2] },
++        "toml" => { glyph : "", fg: "#9C4221", padding: [1, 2] },
++        "torrent" => { glyph : "", fg: "#44CDA8", padding: [1, 2] },
++        "tres" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "ts" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "tscn" => { glyph : "", fg: "#6D8086", padding: [1, 2] },
++        "tsconfig" => { glyph : "", fg: "#FF8700", padding: [1, 2] },
++        "tsx" => { glyph : "", fg: "#1354BF", padding: [1, 2] },
++        "ttf" => { glyph : "", fg: "#ECECEC", padding: [1, 2] },
++        "twig" => { glyph : "", fg: "#8DC149", padding: [1, 2] },
++        "txt" => { glyph : "󰈙", fg: "#89E051", padding: [1, 2] },
++        "txz" => { glyph : "", fg: "#ECA517", padding: [1, 2] },
++        "typ" => { glyph : "", fg: "#0DBCC0", padding: [1, 2] },
++        "typoscript" => { glyph : "", fg: "#FF8700", padding: [1, 2] },
++        "ui" => { glyph : "", fg: "#015BF0", padding: [1, 2] },
++        "v" => { glyph : "󰍛", fg: "#019833", padding: [1, 2] },
++        "vala" => { glyph : "", fg: "#7B3DB9", padding: [1, 2] },
++        "vert" => { glyph : "", fg: "#5586A6", padding: [1, 2] },
++        "vh" => { glyph : "󰍛", fg: "#019833", padding: [1, 2] },
++        "vhd" => { glyph : "󰍛", fg: "#019833", padding: [1, 2] },
++        "vhdl" => { glyph : "󰍛", fg: "#019833", padding: [1, 2] },
++        "vi" => { glyph : "", fg: "#FEC60A", padding: [1, 2] },
++        "vim" => { glyph : "", fg: "#019833", padding: [1, 2] },
++        "vsh" => { glyph : "", fg: "#5D87BF", padding: [1, 2] },
++        "vsix" => { glyph : "", fg: "#854CC7", padding: [1, 2] },
++        "vue" => { glyph : "", fg: "#8DC149", padding: [1, 2] },
++        "wasm" => { glyph : "", fg: "#5C4CDB", padding: [1, 2] },
++        "wav" => { glyph : "", fg: "#00AFFF", padding: [1, 2] },
++        "webm" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "webmanifest" => { glyph : "", fg: "#F1E05A", padding: [1, 2] },
++        "webp" => { glyph : "", fg: "#A074C4", padding: [1, 2] },
++        "webpack" => { glyph : "󰜫", fg: "#519ABA", padding: [1, 2] },
++        "wma" => { glyph : "", fg: "#00AFFF", padding: [1, 2] },
++        "wmv" => { glyph : "", fg: "#FD971F", padding: [1, 2] },
++        "woff" => { glyph : "", fg: "#DAD8D8", padding: [1, 2] },
++        "woff2" => { glyph : "", fg: "#DAD8D8", padding: [1, 2] },
++        "wrl" => { glyph : "󰆧", fg: "#888888", padding: [1, 2] },
++        "wrz" => { glyph : "󰆧", fg: "#888888", padding: [1, 2] },
++        "wv" => { glyph : "", fg: "#00AFFF", padding: [1, 2] },
++        "wvc" => { glyph : "", fg: "#00AFFF", padding: [1, 2] },
++        "x" => { glyph : "", fg: "#599EFF", padding: [1, 2] },
++        "xaml" => { glyph : "󰙳", fg: "#512BD4", padding: [1, 2] },
++        "xcf" => { glyph : "", fg: "#635B46", padding: [1, 2] },
++        "xcplayground" => { glyph : "", fg: "#E37933", padding: [1, 2] },
++        "xcstrings" => { glyph : "", fg: "#2596BE", padding: [1, 2] },
++        "xls" => { glyph : "󰈛", fg: "#207245", padding: [1, 2] },
++        "xlsx" => { glyph : "󰈛", fg: "#207245", padding: [1, 2] },
++        "xm" => { glyph : "", fg: "#519ABA", padding: [1, 2] },
++        "xml" => { glyph : "󰗀", fg: "#E37933", padding: [1, 2] },
++        "xpi" => { glyph : "", fg: "#FF1B01", padding: [1, 2] },
++        "xslt" => { glyph : "󰗀", fg: "#33A9DC", padding: [1, 2] },
++        "xul" => { glyph : "", fg: "#E37933", padding: [1, 2] },
++        "xz" => { glyph : "", fg: "#ECA517", padding: [1, 2] },
++        "yaml" => { glyph : "", fg: "#D70000", padding: [1, 2] },
++        "yml" => { glyph : "", fg: "#D70000", padding: [1, 2] },
++        "zig" => { glyph : "", fg: "#F69A1B", padding: [1, 2] },
++        "zip" => { glyph : "", fg: "#ECA517", padding: [1, 2] },
++        "zsh" => { glyph : "", fg: "#89E051", padding: [1, 2] },
++        "zst" => { glyph : "", fg: "#ECA517", padding: [1, 2] },
++        "🔥" => { glyph : "", fg: "#FF4C1F", padding: [1, 2] },
++    },
++});
++
++#[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone)]
++pub struct File {
++    #[serde(default)]
++    filename: HashMap<SmartString, Icon>,
++    #[serde(default)]
++    extension: HashMap<SmartString, Icon>,
++}
++
++impl File {
++    #[inline]
++    #[must_use]
++    pub fn get<P: AsRef<Path>>(&self, path: P) -> Option<Icon> {
++        self.get_by_filename(&path)
++            .or_else(|| self.get_by_extension(&path))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn get_by_filename<P: AsRef<Path>>(&self, path: P) -> Option<Icon> {
++        let path = path.as_ref();
++        let name = path.file_name()?.to_string_lossy();
++
++        // All icons in `filename` are user overrides.
++        match self.filename.get(name.as_ref()) {
++            Some(icon) => {
++                // If there is no existing `base` icon, then just
++                // return whatever the user provided.
++                FILE.filename
++                    .get(name.as_ref())
++                    .map_or(Some(*icon), |base| {
++                        Some(base.patch_from_user_override(*icon))
++                    })
++            }
++            None => FILE.filename.get(name.as_ref()).copied(),
++        }
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn get_by_extension<P: AsRef<Path>>(&self, path: P) -> Option<Icon> {
++        let path = path.as_ref();
++        let ext = path.extension()?.to_string_lossy();
++
++        // All icons in `extension` are user overrides.
++        match self.extension.get(ext.as_ref()) {
++            Some(icon) => {
++                // If there is no existing `base` icon, then just
++                // return whatever the user provided.
++                FILE.extension.get(ext.as_ref()).map_or_else(
++                    || {
++                        FILE.extension
++                            .get(ext.as_ref())
++                            .copied()
++                            .map(|base| base.patch_from_user_override(*icon))
++                    },
++                    |base| Some(base.patch_from_user_override(*icon)),
++                )
++            }
++            None => FILE.extension.get(ext.as_ref()).copied(),
++        }
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn get_or_default<P: AsRef<Path>>(&self, path: P) -> Icon {
++        self.get(path)
++            .unwrap_or_else(|| icon!(glyph: "", padding: [1, 2]))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn get_with_style_or_default<P: AsRef<Path>>(&self, path: P, theme: &Theme) -> Icon {
++        let path = path.as_ref();
++
++        let name = path.file_name().map(|name| name.display());
++        let ext = path.extension().map(|ext| ext.display());
++
++        let mut icon = self.get_or_default(path);
++
++        let style = if icon.is_user_overridden() {
++            icon.style()
++        } else {
++            // WARN: Order matters, with `name` needing to
++            // be first to match exact filenames before extensions.
++            [name.as_ref(), ext.as_ref()]
++                .into_iter()
++                .flatten()
++                .find_map(|scope| self.get_style_from_theme(theme, scope))
++                .map_or_else(|| icon.style(), |style| icon.style().patch(style))
++        };
++
++        icon.set_style(style);
++
++        icon
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn get_with_active_style_or_default<P: AsRef<Path>>(
++        &self,
++        path: P,
++        theme: &Theme,
++        base: Style,
++    ) -> Icon {
++        let path = path.as_ref();
++
++        let name = path.file_name().map(|name| name.display());
++        let ext = path.extension().map(|ext| ext.display());
++
++        let mut icon = self.get_or_default(path);
++
++        let style = if icon.is_user_overridden() {
++            base.patch(icon.style())
++        } else {
++            // WARN: Order matters, with `name` needing to be
++            // first to match exact filenames before extensions.
++            [name, ext]
++                .into_iter()
++                .flatten()
++                .find_map(|scope| self.get_active_style_from_theme(theme, scope))
++                .map_or_else(
++                    || base.patch(icon.style()),
++                    |style| base.patch(icon.style()).patch(style),
++                )
++        };
++
++        icon.set_style(style);
++
++        icon
++    }
++
++    #[inline]
++    #[must_use]
++    fn get_style_from_theme<D: Display>(&self, theme: &Theme, scope: D) -> Option<Style> {
++        theme.try_get_exact(&format!("icons.file.{scope}"))
++    }
++
++    #[inline]
++    #[must_use]
++    fn get_active_style_from_theme<D: Display>(&self, theme: &Theme, scope: D) -> Option<Style> {
++        if let Some(style) = theme.try_get_exact(&format!("icons.file.{scope}.active")) {
++            return Some(style);
++        }
++        self.get_style_from_theme(theme, scope)
++    }
++}
++
++static DIRECTORY: LazyLock<Directory> = LazyLock::new(|| Directory {
++    icons: icons! {
++        // Special names.
++        "default" => { glyph: "󰉋", padding: [1, 2] },
++        "open" => { glyph: "󰝰", padding: [1, 2] },
++
++        ".config" => { glyph: "", padding: [1, 2] },
++        ".exercism" => { glyph: "", padding: [1, 2] },
++        ".git" => { glyph: "", padding: [1, 2] },
++        ".jj" => { glyph: "", padding: [1, 2] },
++        ".github" => { glyph: "", padding: [1, 2] },
++        ".npm" => { glyph: "", padding: [1, 2] },
++        ".opam" => { glyph: "", padding: [1, 2] },
++        ".ssh" => { glyph: "󰢬", padding: [1, 2] },
++        "Contacts" => { glyph: "󰉌", padding: [1, 2] },
++        "Documents" => { glyph: "󰲂", padding: [1, 2] },
++        "Downloads" => { glyph: "󰉍", padding: [1, 2] },
++        "Favorites" => { glyph: "󰚝", padding: [1, 2] },
++        "Mail" => { glyph: "󰇰", padding: [1, 2] },
++        "Movies" => { glyph: "󰿎", padding: [1, 2] },
++        "Music" => { glyph: "󱍙", padding: [1, 2] },
++        "Pictures" => { glyph: "󰉏", padding: [1, 2] },
++        "Videos" => { glyph: "", padding: [1, 2] },
++        "build" => { glyph: "󱧼", padding: [1, 2] },
++        "cabal" => { glyph: "", fg: "#A074C4", padding: [1, 2] },
++        "config" => { glyph: "", padding: [1, 2] },
++        "home" => { glyph: "󱂵", padding: [1, 2] },
++        "include" => { glyph: "", padding: [1, 2] },
++        "node_modules" => { glyph: "", padding: [1, 2] },
++        "npm_cache" => { glyph: "", padding: [1, 2] },
++        "src" => { glyph: "󰣞", padding: [1, 2] },
++        "ssh" => { glyph: "󰢬", padding: [1, 2] },
++    },
++});
++
++#[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone)]
++pub struct Directory {
++    #[serde(flatten)]
++    icons: HashMap<SmartString, Icon>,
++}
++
++impl Directory {
++    #[inline]
++    #[must_use]
++    pub fn get(&self, name: &str, is_open: bool) -> Icon {
++        if is_open {
++            return match self.icons.get("open") {
++                Some(icon) => DIRECTORY
++                    .icons
++                    .get("open")
++                    .map_or_else(
++                        || DIRECTORY.icons.get("open").copied(),
++                        |base| Some(base.patch_from_user_override(*icon)),
++                    )
++                    .expect("this should default to `open` which is always provided"),
++                None => DIRECTORY
++                    .icons
++                    .get("open")
++                    .copied()
++                    .expect("this should default to `open` which is always provided"),
++            };
++        }
++
++        // All icons in `self.icons` are user overrides.
++        match self.icons.get(name) {
++            Some(icon) => {
++                // If there is no existing `base` icon, then just
++                // return whatever the user provided.
++                DIRECTORY
++                    .icons
++                    .get(name)
++                    .map_or_else(
++                        || {
++                            DIRECTORY
++                                .icons
++                                .get(name)
++                                .or_else(|| DIRECTORY.icons.get(name))
++                                .or_else(|| DIRECTORY.icons.get("default"))
++                                .copied()
++                                .map(|base| base.patch_from_user_override(*icon))
++                        },
++                        |base| Some(base.patch_from_user_override(*icon)),
++                    )
++                    .expect("this should default to `default` which is always provided")
++            }
++            None => DIRECTORY
++                .icons
++                .get(name)
++                .or_else(|| DIRECTORY.icons.get("default"))
++                .copied()
++                .expect("this should default to `default` which is always provided"),
++        }
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn get_with_style_or_default(
++        &self,
++        name: &str,
++        is_open: bool,
++        theme: &Theme,
++        base: Style,
++    ) -> Icon {
++        let mut icon = self.get(name, is_open);
++
++        let style = if icon.is_user_overridden() {
++            base.patch(icon.style())
++        } else {
++            self.get_style_from_theme(theme, name).map_or_else(
++                || base.patch(icon.style()),
++                |style| base.patch(icon.style()).patch(style),
++            )
++        };
++
++        icon.set_style(style);
++
++        icon
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn get_style_from_theme<D: Display>(&self, theme: &Theme, scope: D) -> Option<Style> {
++        theme.try_get_exact(&format!("icons.directory.{scope}"))
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Dap {
++    verified: Option<Icon>,
++    unverified: Option<Icon>,
++    play: Option<Icon>,
++}
++
++impl Dap {
++    #[inline]
++    #[must_use]
++    pub fn verified(&self) -> Icon {
++        self.verified.unwrap_or_else(|| icon!("●"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn unverified(&self) -> Icon {
++        self.unverified.unwrap_or_else(|| icon!("◯"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn play(&self) -> Icon {
++        self.play.unwrap_or_else(|| icon!("▶"))
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++#[serde(default, deny_unknown_fields)]
++pub struct Ui {
++    workspace: Option<Icon>,
++    gutter: Gutter,
++    #[serde(rename = "virtual")]
++    r#virtual: Virtual,
++    statusline: Statusline,
++    indicator: Indicator,
++}
++
++impl Ui {
++    /// Returns a workspace diagnostic icon.
++    ///
++    /// If no icon is set in the config, it will return `W` by default.
++    #[inline]
++    #[must_use]
++    pub fn workspace(&self) -> Icon {
++        self.workspace.unwrap_or_else(|| icon!("W"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn gutter(&self) -> &Gutter {
++        &self.gutter
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn r#virtual(&self) -> &Virtual {
++        &self.r#virtual
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn statusline(&self) -> &Statusline {
++        &self.statusline
++    }
++
++    #[inline]
++    #[must_use]
++    pub const fn indicator(&self) -> &Indicator {
++        &self.indicator
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Gutter {
++    added: Option<Icon>,
++    modified: Option<Icon>,
++    removed: Option<Icon>,
++}
++
++impl Gutter {
++    #[inline]
++    #[must_use]
++    pub fn added(&self) -> Icon {
++        self.added.unwrap_or_else(|| icon!("▍"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn modified(&self) -> Icon {
++        self.modified.unwrap_or_else(|| icon!("▍"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn removed(&self) -> Icon {
++        self.removed.unwrap_or_else(|| icon!("▔"))
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Virtual {
++    // Whitespace
++    space: Option<Icon>,
++    nbsp: Option<Icon>,
++    nnbsp: Option<Icon>,
++    tab: Option<Icon>,
++    newline: Option<Icon>,
++    tabpad: Option<Icon>,
++
++    // Soft-wrap
++    wrap: Option<Icon>,
++
++    // Indentation guide
++    indentation: Option<Icon>,
++
++    // Ruler
++    ruler: Option<Icon>,
++}
++
++impl Virtual {
++    #[inline]
++    #[must_use]
++    pub fn space(&self) -> Icon {
++        // Default: U+00B7
++        self.space.unwrap_or_else(|| icon!("·"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn nbsp(&self) -> Icon {
++        // Default: U+237D
++        self.nbsp.unwrap_or_else(|| icon!("⍽"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn nnbsp(&self) -> Icon {
++        // Default: U+2423
++        self.nnbsp.unwrap_or_else(|| icon!("␣"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn tab(&self) -> Icon {
++        // Default: U+2192
++        self.tab.unwrap_or_else(|| icon!("→"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn newline(&self) -> Icon {
++        // Default: U+23CE
++        self.newline.unwrap_or_else(|| icon!("⏎"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn tabpad(&self) -> Icon {
++        // Default: U+23CE
++        self.tabpad.unwrap_or_else(|| icon!(" "))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn wrap(&self) -> Icon {
++        // Default: U+21AA
++        self.wrap.unwrap_or_else(|| icon!("↪"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn indentation(&self) -> Icon {
++        // Default: U+254E
++        self.indentation.unwrap_or_else(|| icon!("╎"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn ruler(&self) -> Icon {
++        // TODO: Default: ┊
++        self.ruler.unwrap_or_else(|| icon!(" "))
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Statusline {
++    separator: Option<Icon>,
++}
++
++impl Statusline {
++    #[inline]
++    #[must_use]
++    pub fn separator(&self) -> Icon {
++        self.separator.unwrap_or_else(|| icon!("│"))
++    }
++}
++
++#[derive(Debug, Deserialize, PartialEq, Eq, Clone, Default)]
++pub struct Indicator {
++    readonly: Option<Icon>,
++    modified: Option<Icon>,
++    insecure: Option<Icon>,
++}
++
++impl Indicator {
++    #[inline]
++    #[must_use]
++    pub fn readonly(&self) -> Icon {
++        self.readonly.unwrap_or_else(|| icon!("[readonly]"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn modified(&self) -> Icon {
++        // TODO: ●?
++        self.modified.unwrap_or_else(|| icon!("[+]"))
++    }
++
++    #[inline]
++    #[must_use]
++    pub fn insecure(&self) -> Icon {
++        self.insecure.unwrap_or_else(|| icon!("[⚠]"))
++    }
++}
++
++#[cfg(test)]
++mod test {
++    use super::*;
++
++    #[test]
++    fn kind_should_always_contain_color_icon() {
++        let icons = Icons::default();
++        let icon = icons.kind().color();
++        assert_eq!(icon.glyph(), "■");
++    }
++}
+diff --git a/helix-view/src/lib.rs b/helix-view/src/lib.rs
+index ab3ec32fcdb3..a238a5fed32d 100644
+--- a/helix-view/src/lib.rs
++++ b/helix-view/src/lib.rs
+@@ -11,6 +11,7 @@ pub mod expansion;
+ pub mod graphics;
+ pub mod gutter;
+ pub mod handlers;
++pub mod icons;
+ pub mod info;
+ pub mod input;
+ pub mod keyboard;

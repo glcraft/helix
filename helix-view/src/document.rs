@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Error};
-use arc_swap::access::DynAccess;
+use arc_swap::access::{DynAccess, DynGuard};
 use arc_swap::ArcSwap;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
@@ -13,8 +13,10 @@ use helix_core::snippets::{ActiveSnippet, SnippetRenderCtx};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::text_annotations::{InlineAnnotation, Overlay};
 use helix_event::TaskController;
+use helix_lsp::lsp::DocumentSymbol;
 use helix_lsp::util::lsp_pos_to_pos;
 use helix_stdx::faccess::{copy_metadata, readonly};
+use helix_stdx::string::StackString;
 use helix_vcs::{DiffHandle, DiffProviderRegistry};
 use once_cell::sync::OnceCell;
 use thiserror;
@@ -43,6 +45,7 @@ use helix_core::{
     ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax, Transaction,
 };
 
+use crate::icons::{Icons, ICONS};
 use crate::{
     editor::Config,
     events::{DocumentDidChange, SelectionDidChange},
@@ -149,15 +152,22 @@ pub struct Document {
     ///
     /// To know if they're up-to-date, check the `id` field in `DocumentInlayHints`.
     pub(crate) inlay_hints: HashMap<ViewId, DocumentInlayHints>,
+    /// Set to `true` when the document is updated, reset to `false` on the next inlay hints
+    /// update from the LSP
+    pub inlay_hints_oudated: bool,
+
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
+
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
     /// LSP code action hints for each view.
     pub(crate) code_action_hints: HashSet<ViewId>,
-    /// Set to `true` when the document is updated, reset to `false` on the next inlay hints
-    /// update from the LSP
-    pub inlay_hints_oudated: bool,
+
+    // Stores all the symbols of the Document.
+    pub(crate) symbols: Option<DocumentSymbolCache>,
+    /// Breadcrumb trail for each view showing this document.
+    pub breadcrumbs: HashMap<ViewId, Breadcrumbs>,
 
     path: Option<PathBuf>,
     relative_path: OnceCell<Option<PathBuf>>,
@@ -229,11 +239,89 @@ pub struct Document {
     pub code_action_controllers: HashMap<ViewId, TaskController>,
     pub pull_diagnostic_controller: TaskController,
     pub document_link_controller: TaskController,
+    pub document_symbols_controller: TaskController,
 
     // NOTE: this field should eventually go away - we should use the Editor's syn_loader instead
     // of storing a copy on every doc. Then we can remove the surrounding `Arc` and use the
     // `ArcSwap` directly.
     syn_loader: Arc<ArcSwap<syntax::Loader>>,
+}
+
+pub struct DocumentSymbolCache {
+    pub tree: Vec<ThinDocumentSymbol>,
+    pub offset_encoding: OffsetEncoding,
+}
+
+#[derive(Debug, Clone)]
+pub struct ThinDocumentSymbol {
+    pub name: Box<str>,
+    pub kind: lsp::SymbolKind,
+    pub range: lsp::Range,
+    pub children: Option<Box<[Self]>>,
+}
+
+impl From<DocumentSymbol> for ThinDocumentSymbol {
+    #[inline]
+    fn from(symbol: DocumentSymbol) -> Self {
+        Self {
+            name: symbol.name.into(),
+            kind: symbol.kind,
+            range: symbol.range,
+            children: symbol.children.map(|children| {
+                let mut vec = Vec::with_capacity(children.len());
+                vec.extend(children.into_iter().map(Self::from));
+                vec.into_boxed_slice()
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Breadcrumbs(Vec<Crumb>);
+
+impl Breadcrumbs {
+    #[inline]
+    pub fn push(&mut self, crumb: Crumb) {
+        self.0.push(crumb);
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &Crumb> {
+        self.0.iter()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Crumb {
+    pub name: Box<str>,
+    pub kind: lsp::SymbolKind,
+}
+
+impl From<&ThinDocumentSymbol> for Crumb {
+    #[inline]
+    fn from(symbol: &ThinDocumentSymbol) -> Self {
+        Self {
+            name: symbol.name.clone(),
+            kind: symbol.kind,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -715,7 +803,7 @@ where
     *mut_ref = f(mem::take(mut_ref));
 }
 
-use helix_lsp::{lsp, Client, LanguageServerId, LanguageServerName};
+use helix_lsp::{lsp, Client, LanguageServerId, LanguageServerName, OffsetEncoding};
 use helix_stdx::Url;
 
 impl Document {
@@ -776,6 +864,9 @@ impl Document {
             previous_diagnostic_ids: HashMap::new(),
             pull_diagnostic_controller: TaskController::new(),
             document_link_controller: TaskController::new(),
+            symbols: None,
+            document_symbols_controller: TaskController::new(),
+            breadcrumbs: HashMap::new(),
         }
     }
 
@@ -1429,6 +1520,10 @@ impl Document {
         }
 
         self.view_data_mut(view_id);
+
+        if self.config.load().breadcrumb.enable {
+            self.update_breadcrumbs_for_view(view_id);
+        }
     }
 
     /// Mark document as recent used for MRU sorting
@@ -1436,12 +1531,13 @@ impl Document {
         self.focused_at = std::time::Instant::now();
     }
 
-    /// Remove a view's selection and inlay hints from this document.
+    /// Remove any views' data and state that is stored in the `Document`.
     pub fn remove_view(&mut self, view_id: ViewId) {
         self.selections.remove(&view_id);
         self.view_data.remove(&view_id);
         self.inlay_hints.remove(&view_id);
         self.jump_labels.remove(&view_id);
+        self.breadcrumbs.remove(&view_id);
         self.document_highlights.remove(&view_id);
         self.document_highlight_controllers.remove(&view_id);
         self.code_action_hints.remove(&view_id);
@@ -2351,7 +2447,9 @@ impl Document {
 
     pub fn text_format(&self, mut viewport_width: u16, theme: Option<&Theme>) -> TextFormat {
         let config = self.config.load();
+
         let text_width = self.text_width();
+
         let mut soft_wrap_at_text_width = self
             .language_config()
             .and_then(|config| {
@@ -2362,47 +2460,62 @@ impl Document {
             })
             .or(config.soft_wrap.wrap_at_text_width)
             .unwrap_or(false);
+
         if soft_wrap_at_text_width {
-            // if the viewport is smaller than the specified
-            // width then this setting has no effcet
+            // If the viewport is smaller than the specified
+            // width then this setting has no effect.
             if text_width >= viewport_width as usize {
                 soft_wrap_at_text_width = false;
             } else {
                 viewport_width = text_width as u16;
             }
         }
-        let config = self.config.load();
+
         let editor_soft_wrap = &config.soft_wrap;
+
         let language_soft_wrap = self
             .language
             .as_ref()
             .and_then(|config| config.soft_wrap.as_ref());
+
         let enable_soft_wrap = language_soft_wrap
             .and_then(|soft_wrap| soft_wrap.enable)
             .or(editor_soft_wrap.enable)
             .unwrap_or(false);
+
         let max_wrap = language_soft_wrap
             .and_then(|soft_wrap| soft_wrap.max_wrap)
             .or(config.soft_wrap.max_wrap)
             .unwrap_or(20);
+
         let max_indent_retain = language_soft_wrap
             .and_then(|soft_wrap| soft_wrap.max_indent_retain)
             .or(editor_soft_wrap.max_indent_retain)
             .unwrap_or(40);
+
         let wrap_indicator = language_soft_wrap
-            .and_then(|soft_wrap| soft_wrap.wrap_indicator.clone())
-            .or_else(|| config.soft_wrap.wrap_indicator.clone())
-            .unwrap_or_else(|| "↪ ".into());
+            .and_then(|soft_wrap| {
+                soft_wrap
+                    .wrap_indicator
+                    .as_ref()
+                    .and_then(|indicator| StackString::try_from(indicator.as_str()).ok())
+            })
+            .unwrap_or_else(|| {
+                let icons: DynGuard<Icons> = ICONS.load();
+                icons.ui().r#virtual().wrap().glyph()
+            });
+
         let tab_width = self.tab_width() as u16;
+
         TextFormat {
             soft_wrap: enable_soft_wrap && viewport_width > 10,
             tab_width,
             max_wrap: max_wrap.min(viewport_width / 4),
             max_indent_retain: max_indent_retain.min(viewport_width * 2 / 5),
-            // avoid spinning forever when the window manager
-            // sets the size to something tiny
+            // Avoid spinning forever when the window
+            // manager sets the size to something tiny
             viewport_width,
-            wrap_indicator: wrap_indicator.into_boxed_str(),
+            wrap_indicator,
             wrap_indicator_highlight: theme
                 .and_then(|theme| theme.find_highlight("ui.virtual.wrap")),
             soft_wrap_at_text_width,
@@ -2420,6 +2533,103 @@ impl Document {
 
     pub fn remove_jump_labels(&mut self, view_id: ViewId) {
         self.jump_labels.remove(&view_id);
+    }
+
+    #[inline(always)]
+    pub fn set_document_symbols(
+        &mut self,
+        symbols: Vec<DocumentSymbol>,
+        offset_encoding: OffsetEncoding,
+    ) {
+        self.symbols = Some(DocumentSymbolCache {
+            tree: {
+                let mut tree = Vec::with_capacity(symbols.len());
+                tree.extend(symbols.into_iter().map(ThinDocumentSymbol::from));
+                tree
+            },
+            offset_encoding,
+        });
+    }
+
+    #[inline]
+    pub fn clear_document_symbols(&mut self) {
+        self.symbols = None;
+        self.clear_breadcrumbs();
+    }
+
+    #[inline]
+    pub fn clear_breadcrumbs(&mut self) {
+        self.breadcrumbs.clear();
+    }
+
+    // For all non-hotpaths, we use this function to prevent code bloat.
+    #[inline(never)]
+    pub fn update_breadcrumbs_for_view(&mut self, view_id: ViewId) {
+        self.update_breadcrumbs_for_view_inlined(view_id);
+    }
+
+    // We want to make sure this is inlined in the hotpath (cursor position change).
+    #[inline(always)]
+    pub fn update_breadcrumbs_for_view_inlined(&mut self, view_id: ViewId) {
+        #[inline(always)]
+        const fn in_range(pos: lsp::Position, range: lsp::Range) -> bool {
+            // PERF:
+            // Line-based filtering is the most effective early exit indicator,
+            // so do first, before other evaluations; this should be friendly to
+            // the CPU branch predictor.
+            if pos.line < range.start.line || pos.line > range.end.line {
+                return false;
+            }
+
+            // Check if the cursor position is "in" the symbols "depth".
+            //
+            // In the context of breadcrumbs, this would be the difference between
+            // if the cursor is in an impl block or in an impl block and in a
+            // function of the impl block (`|` is the cursor):
+            //
+            // ```rust
+            // impl Foo {
+            //     f|n bar() {} // In `bar`: impl Foo > bar
+            //
+            //   | fn baz() {} // Not in `baz`: impl Foo
+            //
+            //     fn quux() {} | // Not in `quux`: impl Foo
+            // }
+            // ```
+            if pos.line == range.start.line && pos.character < range.start.character {
+                return false;
+            }
+            if pos.line == range.end.line && pos.character > range.end.character {
+                return false;
+            }
+
+            true
+        }
+
+        let Some(symbols) = self.symbols.as_ref() else {
+            return;
+        };
+
+        let position = self.position(view_id, symbols.offset_encoding);
+
+        let breadcrumb = {
+            let breadcrumb = self.breadcrumbs.entry(view_id).or_default();
+            breadcrumb.clear();
+            breadcrumb
+        };
+
+        let mut current = symbols.tree.as_slice();
+
+        while let Some(symbol) = current
+            .iter()
+            .find(|&symbol| in_range(position, symbol.range))
+        {
+            breadcrumb.push(Crumb::from(symbol));
+            match symbol.children.as_deref() {
+                Some(children) => current = children,
+                _ => break,
+            }
+        }
     }
 
     pub fn set_document_highlights(

@@ -22,11 +22,13 @@ use helix_core::{
     unicode::width::UnicodeWidthStr,
     visual_offset_from_block, Change, Position, Range, Selection, Transaction,
 };
+use helix_lsp::lsp::SymbolKind;
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
-    editor::{CompleteAction, CursorShapeConfig},
+    editor::{BufferLine, CompleteAction, CursorShapeConfig},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
+    icons::ICONS,
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
     Document, Editor, Theme, View,
@@ -74,6 +76,7 @@ impl EditorView {
         &mut self.spinners
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn render_view(
         &self,
         editor: &Editor,
@@ -93,6 +96,10 @@ impl EditorView {
 
         let text_annotations = view.text_annotations(doc, Some(theme));
         let mut decorations = DecorationManager::default();
+
+        if config.breadcrumb.enable {
+            Self::render_breadcrumb(editor, doc, view, area.with_height(1), surface);
+        }
 
         if is_focused && config.cursorline {
             decorations.add_decoration(Self::cursorline(doc, view, theme));
@@ -254,15 +261,16 @@ impl EditorView {
         surface: &mut Surface,
         theme: &Theme,
     ) {
-        let editor_rulers = &editor.config().rulers;
-        let ruler_theme = theme
+        let config = editor.config();
+
+        let style = theme
             .try_get("ui.virtual.ruler")
             .unwrap_or_else(|| Style::default().bg(Color::Red));
 
         let rulers = doc
             .language_config()
-            .and_then(|config| config.rulers.as_ref())
-            .unwrap_or(editor_rulers);
+            .and_then(|config| config.rulers.as_deref())
+            .unwrap_or_else(|| config.rulers.as_slice());
 
         let view_offset = doc.view_offset(view.id);
 
@@ -273,7 +281,17 @@ impl EditorView {
             .filter_map(|ruler| ruler.checked_sub(1 + view_offset.horizontal_offset as u16))
             .filter(|ruler| ruler < &viewport.width)
             .map(|ruler| viewport.clip_left(ruler).with_width(1))
-            .for_each(|area| surface.set_style(area, ruler_theme))
+            .for_each(|area| {
+                let icons = ICONS.load();
+                for y in area.top()..area.bottom() {
+                    surface.set_string(
+                        area.x,
+                        y,
+                        &icons.ui().r#virtual().ruler().to_string(),
+                        style,
+                    );
+                }
+            });
     }
 
     fn viewport_byte_range(
@@ -343,7 +361,7 @@ impl EditorView {
         .map_or(visible_range.start as u32, |node| node.start_byte());
         let range = start..visible_range.end as u32;
 
-        Some(syntax.rainbow_highlights(text, theme.rainbow_length(), loader, range))
+        Some(syntax.rainbow_highlights(text, theme.rainbow_bracket_length(), loader, range))
     }
 
     /// Get highlight spans for document diagnostics
@@ -660,31 +678,32 @@ impl EditorView {
     }
 
     /// Render bufferline at the top
+    #[allow(clippy::too_many_lines)]
     pub fn render_bufferline(editor: &Editor, viewport: Rect, surface: &mut Surface) {
+        let theme = editor.theme.as_ref();
+
         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
+
         surface.clear_with(
             viewport,
-            editor
-                .theme
+            theme
                 .try_get("ui.bufferline.background")
-                .unwrap_or_else(|| editor.theme.get("ui.statusline")),
+                .unwrap_or_else(|| theme.get("ui.statusline")),
         );
 
-        let bufferline_active = editor
-            .theme
+        let bufferline_active = theme
             .try_get("ui.bufferline.active")
-            .unwrap_or_else(|| editor.theme.get("ui.statusline.active"));
+            .unwrap_or_else(|| theme.get("ui.statusline.active"));
 
-        let bufferline_inactive = editor
-            .theme
+        let bufferline_inactive = theme
             .try_get("ui.bufferline")
-            .unwrap_or_else(|| editor.theme.get("ui.statusline.inactive"));
+            .unwrap_or_else(|| theme.get("ui.statusline.inactive"));
 
         let mut x = viewport.x;
         let current_doc = view!(editor).doc;
 
         for doc in editor.documents() {
-            let fname = doc
+            let name = doc
                 .path()
                 .unwrap_or(&scratch)
                 .file_name()
@@ -692,22 +711,201 @@ impl EditorView {
                 .to_str()
                 .unwrap_or_default();
 
-            let style = if current_doc == doc.id() {
+            let is_active = current_doc == doc.id();
+
+            let base = if is_active {
                 bufferline_active
             } else {
                 bufferline_inactive
             };
 
-            let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
-            let used_width = viewport.x.saturating_sub(x);
-            let rem_width = surface.area.width.saturating_sub(used_width);
+            let path = doc.path();
 
-            x = surface
-                .set_stringn(x, viewport.y, &text, rem_width as usize, style)
-                .0;
+            let icons = ICONS.load();
 
-            if x >= surface.area.right() {
-                break;
+            if let Some(path) = path {
+                if let Some(file) = icons.fs().file() {
+                    let icon = file.get_with_active_style_or_default(path, theme, base);
+
+                    let used = viewport.x.saturating_sub(x);
+                    let remaining = surface.area.width.saturating_sub(used);
+
+                    x = surface
+                        .set_stringn(
+                            x,
+                            viewport.y,
+                            &icon.glyph(),
+                            remaining as usize,
+                            icon.style(),
+                        )
+                        .0;
+
+                    if x >= surface.area.right() {
+                        break;
+                    }
+                }
+            }
+
+            // PERF:
+            // Rather than using `format!{"{name} "}`, we can save an allocation.
+            for element in [name, " "] {
+                let used = viewport.x.saturating_sub(x);
+                let remaining = surface.area.width.saturating_sub(used);
+
+                x = surface
+                    .set_stringn(x, viewport.y, element, remaining as usize, base)
+                    .0;
+
+                if x >= surface.area.right() {
+                    break;
+                }
+            }
+
+            if doc.is_modified() {
+                let modified = icons.ui().indicator().modified();
+                // PERF:
+                // Rather than using `format!{"{name} "}`, we can save an allocation.
+                for element in [modified.glyph().as_str(), " "] {
+                    let used = viewport.x.saturating_sub(x);
+                    let remaining = surface.area.width.saturating_sub(used);
+
+                    x = surface
+                        .set_stringn(x, viewport.y, element, remaining as usize, base)
+                        .0;
+
+                    if x >= surface.area.right() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub fn render_breadcrumb(
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        viewport: Rect,
+        surface: &mut Surface,
+    ) {
+        use helix_view::editor::BreadcrumbPathOptions::{File, Full};
+
+        #[inline]
+        #[must_use]
+        fn draw_element(
+            surface: &mut Surface,
+            viewport: Rect,
+            x: u16,
+            content: &str,
+            style: Style,
+        ) -> u16 {
+            let remaining = viewport.right().saturating_sub(x) as usize;
+            surface
+                .set_stringn(x, viewport.y, content, remaining, style)
+                .0
+        }
+
+        let config = editor.config();
+
+        let style = editor
+            .theme
+            .try_get_exact("ui.breadcrumb")
+            .unwrap_or_else(|| editor.theme.get("ui.text"));
+
+        surface.clear_with(viewport, style);
+
+        let mut x = viewport.x.saturating_add(1);
+
+        let separator = " > ";
+        let separator_style = editor.theme.get("ui.breadcrumb.separator");
+        let mut draw_separator = false;
+
+        if matches!(config.breadcrumb.path, Full | File) {
+            if let Some(path) = doc.relative_path() {
+                let mut components = path.components().peekable();
+
+                if matches!(config.breadcrumb.path, File) {
+                    // Skip until the filename component.
+                    //
+                    // NOTE:
+                    // We could use `next_back` to get this element directly, but
+                    // this keeps our logic below simpler, with the logic for `Full`
+                    // and `File` being the same below this point.
+                    //
+                    // PERF: The `clone` is cheap; should be equivalent to a `Copy`.
+                    while components.clone().nth(1).is_some() {
+                        components.next();
+                    }
+                }
+
+                while let Some(component) = components.next() {
+                    if draw_separator {
+                        x = draw_element(surface, viewport, x, separator, separator_style);
+                    } else {
+                        draw_separator = true;
+                    }
+
+                    let segment = component.as_os_str().to_string_lossy();
+                    let is_directory = components.peek().is_some();
+
+                    let style = if is_directory {
+                        editor.theme.get("ui.text.directory")
+                    } else {
+                        style
+                    };
+
+                    x = draw_element(surface, viewport, x, &segment, style);
+                }
+            } else {
+                // Handle `[scratch]`
+                x = draw_element(surface, viewport, x, SCRATCH_BUFFER_NAME, style);
+            }
+        }
+
+        // Draw symbols, if any.
+        if let Some(breadcrumb) = doc.breadcrumbs.get(&view.id) {
+            for symbol in breadcrumb.iter() {
+                if draw_separator {
+                    x = draw_element(surface, viewport, x, separator, separator_style);
+                } else {
+                    draw_separator = true;
+                }
+
+                let style = match symbol.kind {
+                    SymbolKind::MODULE
+                    | SymbolKind::NAMESPACE
+                    | SymbolKind::PACKAGE => editor.theme.get("namespace"),
+
+                    SymbolKind::OBJECT // impl Block
+                    | SymbolKind::STRUCT
+                    | SymbolKind::INTERFACE
+                    | SymbolKind::CLASS => editor.theme.get("type"),
+
+                    SymbolKind::METHOD => editor.theme.get("function.method"),
+                    SymbolKind::FUNCTION => editor.theme.get("function"),
+
+                    SymbolKind::ENUM => editor.theme.get("type.enum"),
+                    SymbolKind::ENUM_MEMBER => editor.theme.get("type.enum.variant"),
+
+                   SymbolKind::FIELD | SymbolKind::PROPERTY => {
+                        editor.theme.get("variable.other.member")
+                    }
+
+                    SymbolKind::VARIABLE => editor.theme.get("variable"),
+                    SymbolKind::CONSTANT => editor.theme.get("constant"),
+                    SymbolKind::CONSTRUCTOR => editor.theme.get("constructor"),
+                    SymbolKind::STRING => editor.theme.get("string"),
+                    SymbolKind::NUMBER => editor.theme.get("constant.numeric"),
+                    SymbolKind::BOOLEAN => editor.theme.get("constant.builtin.boolean"),
+                    SymbolKind::ARRAY => editor.theme.get("punctuation.bracket"),
+                    SymbolKind::KEY => editor.theme.get("label"),
+                    SymbolKind::NULL => editor.theme.get("constant.builtin"),
+                    SymbolKind::TYPE_PARAMETER => editor.theme.get("type.parameter"),
+                    _ => style,
+                };
+
+                x = draw_element(surface, viewport, x, symbol.name.as_ref(), style);
             }
         }
     }
@@ -1621,7 +1819,6 @@ impl Component for EditorView {
         let config = cx.editor.config();
 
         // check if bufferline should be rendered
-        use helix_view::editor::BufferLine;
         let use_bufferline = match config.bufferline {
             BufferLine::Always => true,
             BufferLine::Multiple if cx.editor.documents.len() > 1 => true,

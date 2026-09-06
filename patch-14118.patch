@@ -1,0 +1,263 @@
+diff --git a/helix-term/src/ui/document.rs b/helix-term/src/ui/document.rs
+index 524d829c4093..5404601a3354 100644
+--- a/helix-term/src/ui/document.rs
++++ b/helix-term/src/ui/document.rs
+@@ -179,6 +179,8 @@ pub struct TextRenderer<'a> {
+     pub whitespace_style: Style,
+     pub indent_guide_char: String,
+     pub indent_guide_style: Style,
++    pub indent_guide_rainbow: bool,
++    pub theme: &'a Theme,
+     pub newline: String,
+     pub nbsp: String,
+     pub nnbsp: String,
+@@ -201,7 +203,7 @@ impl<'a> TextRenderer<'a> {
+     pub fn new(
+         surface: &'a mut Surface,
+         doc: &Document,
+-        theme: &Theme,
++        theme: &'a Theme,
+         offset: Position,
+         viewport: Rect,
+     ) -> TextRenderer<'a> {
+@@ -243,12 +245,19 @@ impl<'a> TextRenderer<'a> {
+         };
+ 
+         let text_style = theme.get("ui.text");
++        let indent_guide_style = text_style.patch(
++            theme
++                .try_get("ui.virtual.indent-guide")
++                .unwrap_or_else(|| theme.get("ui.virtual.whitespace")),
++        );
+ 
+         let indent_width = doc.indent_style.indent_width(tab_width) as u16;
+ 
+         TextRenderer {
+             surface,
+             indent_guide_char: editor_config.indent_guides.character.into(),
++            indent_guide_rainbow: editor_config.indent_guides.rainbow,
++            theme,
+             newline,
+             nbsp,
+             nnbsp,
+@@ -260,11 +269,7 @@ impl<'a> TextRenderer<'a> {
+             starting_indent: offset.col / indent_width as usize
+                 + !offset.col.is_multiple_of(indent_width as usize) as usize
+                 + editor_config.indent_guides.skip_levels as usize,
+-            indent_guide_style: text_style.patch(
+-                theme
+-                    .try_get("ui.virtual.indent-guide")
+-                    .unwrap_or_else(|| theme.get("ui.virtual.whitespace")),
+-            ),
++            indent_guide_style,
+             text_style,
+             draw_indent_guides: editor_config.indent_guides.render,
+             viewport,
+@@ -409,8 +414,14 @@ impl<'a> TextRenderer<'a> {
+                 as u16;
+             let y = self.viewport.y + row;
+             debug_assert!(self.surface.in_bounds(x, y));
++            let indent_guide_style = if self.indent_guide_rainbow {
++                self.indent_guide_style
++                    .patch(self.theme.get_indent_rainbow(i))
++            } else {
++                self.indent_guide_style
++            };
+             self.surface
+-                .set_string(x, y, &self.indent_guide_char, self.indent_guide_style);
++                .set_string(x, y, &self.indent_guide_char, indent_guide_style)
+         }
+     }
+ 
+diff --git a/helix-term/src/ui/editor.rs b/helix-term/src/ui/editor.rs
+index 1f0ff4b3ee44..faff68dea9cf 100644
+--- a/helix-term/src/ui/editor.rs
++++ b/helix-term/src/ui/editor.rs
+@@ -334,7 +334,7 @@ impl EditorView {
+         .map_or(visible_range.start as u32, |node| node.start_byte());
+         let range = start..visible_range.end as u32;
+ 
+-        Some(syntax.rainbow_highlights(text, theme.rainbow_length(), loader, range))
++        Some(syntax.rainbow_highlights(text, theme.rainbow_bracket_length(), loader, range))
+     }
+ 
+     /// Get highlight spans for document diagnostics
+diff --git a/helix-view/src/editor.rs b/helix-view/src/editor.rs
+index 34854054b38f..8d1c8fdc962b 100644
+--- a/helix-view/src/editor.rs
++++ b/helix-view/src/editor.rs
+@@ -921,6 +921,7 @@ pub struct IndentGuidesConfig {
+     pub render: bool,
+     pub character: char,
+     pub skip_levels: u8,
++    pub rainbow: bool,
+ }
+ 
+ impl Default for IndentGuidesConfig {
+@@ -929,6 +930,7 @@ impl Default for IndentGuidesConfig {
+             skip_levels: 0,
+             render: false,
+             character: '│',
++            rainbow: false,
+         }
+     }
+ }
+diff --git a/helix-view/src/theme.rs b/helix-view/src/theme.rs
+index e2e109328cb8..3a19c1fe6a97 100644
+--- a/helix-view/src/theme.rs
++++ b/helix-view/src/theme.rs
+@@ -227,7 +227,8 @@ pub struct Theme {
+     /// Reverse map from scope string to its `Highlight` index. `find_highlight_exact`
+     /// is called many times per frame, so we optimize lookups.
+     scope_index: HashMap<String, Highlight>,
+-    rainbow_length: usize,
++    rainbow_bracket_length: usize,
++    rainbow_indent_length: usize,
+ }
+ 
+ impl From<Value> for Theme {
+@@ -262,12 +263,14 @@ fn build_theme_values(
+     Vec<String>,
+     Vec<Style>,
+     usize,
++    usize,
+     Vec<String>,
+ ) {
+     let mut styles = HashMap::new();
+     let mut scopes = Vec::new();
+     let mut highlights = Vec::new();
+-    let mut rainbow_length = 0;
++    let mut rainbow_bracket_length = 0;
++    let mut rainbow_indent_length = 0;
+ 
+     let mut warnings = Vec::new();
+ 
+@@ -287,8 +290,10 @@ fn build_theme_values(
+     scopes.reserve(values.len());
+     highlights.reserve(values.len());
+ 
++    let rainbow = values.remove("rainbow");
+     for (i, style) in values
+-        .remove("rainbow")
++        .remove("rainbow-brackets")
++        .or(rainbow.clone())
+         .and_then(|value| match palette.parse_style_array(value) {
+             Ok(styles) => Some(styles),
+             Err(err) => {
+@@ -300,11 +305,32 @@ fn build_theme_values(
+         .into_iter()
+         .enumerate()
+     {
+-        let name = format!("rainbow.{i}");
++        let name = format!("rainbow-bracket.{i}");
+         styles.insert(name.clone(), style);
+         scopes.push(name);
+         highlights.push(style);
+-        rainbow_length += 1;
++        rainbow_bracket_length += 1;
++    }
++    for (i, style) in values
++        .remove("rainbow-indents")
++        .or(rainbow.clone())
++        .and_then(|value| match palette.parse_style_array(value) {
++            Ok(styles) => Some(styles),
++            Err(err) => {
++                warnings.push(err);
++                None
++            }
++        })
++        // indent guides should be dimmer than brackets, by default.
++        .unwrap_or_else(|| dim(default_rainbow()))
++        .into_iter()
++        .enumerate()
++    {
++        let name = format!("rainbow-indent.{i}");
++        styles.insert(name.clone(), style);
++        scopes.push(name);
++        highlights.push(style);
++        rainbow_indent_length += 1;
+     }
+ 
+     for (name, style_value) in values {
+@@ -319,7 +345,14 @@ fn build_theme_values(
+         highlights.push(style);
+     }
+ 
+-    (styles, scopes, highlights, rainbow_length, warnings)
++    (
++        styles,
++        scopes,
++        highlights,
++        rainbow_bracket_length,
++        rainbow_indent_length,
++        warnings,
++    )
+ }
+ 
+ fn default_rainbow() -> Vec<Style> {
+@@ -332,6 +365,14 @@ fn default_rainbow() -> Vec<Style> {
+         Style::default().fg(Color::Magenta),
+     ]
+ }
++
++fn dim(styles: Vec<Style>) -> Vec<Style> {
++    styles
++        .into_iter()
++        .map(|s| s.add_modifier(Modifier::DIM))
++        .collect()
++}
++
+ impl Theme {
+     /// To allow `Highlight` to represent arbitrary RGB colors without turning it into an enum,
+     /// we interpret the last 256^3 numbers as RGB.
+@@ -422,8 +463,16 @@ impl Theme {
+         })
+     }
+ 
+-    pub fn rainbow_length(&self) -> usize {
+-        self.rainbow_length
++    pub fn rainbow_bracket_length(&self) -> usize {
++        self.rainbow_bracket_length
++    }
++
++    pub fn get_bracket_rainbow(&self, index: usize) -> Style {
++        self.highlights[index % self.rainbow_bracket_length]
++    }
++
++    pub fn get_indent_rainbow(&self, index: usize) -> Style {
++        self.highlights[(index % self.rainbow_indent_length) + self.rainbow_bracket_length]
+     }
+ 
+     fn from_toml(value: Value) -> (Self, Vec<String>) {
+@@ -486,21 +535,28 @@ impl Theme {
+     }
+ 
+     fn from_keys(toml_keys: Map<String, Value>) -> (Self, Vec<String>) {
+-        let (styles, scopes, highlights, rainbow_length, load_errors) =
+-            build_theme_values(toml_keys);
++        let (
++            styles,
++            scopes,
++            highlights,
++            rainbow_bracket_length,
++            rainbow_indent_length,
++            load_errors,
++        ) = build_theme_values(toml_keys);
+ 
+         let scope_index = scopes
+             .iter()
+             .enumerate()
+             .map(|(i, s)| (s.clone(), Highlight::new(i as u32)))
+             .collect();
+ 
+         let theme = Self {
+             styles,
+             scopes,
+             highlights,
+             scope_index,
+-            rainbow_length,
++            rainbow_bracket_length,
++            rainbow_indent_length,
+             ..Default::default()
+         };
+         (theme, load_errors)

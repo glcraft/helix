@@ -32,7 +32,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{self, AtomicUsize},
         Arc,
@@ -42,11 +42,13 @@ use std::{
 use crate::ui::{Prompt, PromptEvent};
 use helix_core::{
     char_idx_at_visual_offset, fuzzy::MATCHER, movement::Direction,
-    text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation, Position,
+    text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation,
+    visual_offset_from_anchor, Position,
 };
 use helix_view::{
     editor::Action,
     graphics::{CursorKind, Margin, Modifier, Rect},
+    icons::ICONS,
     theme::Style,
     view::ViewPosition,
     Document, DocumentId, Editor,
@@ -85,7 +87,7 @@ pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
 
 pub enum CachedPreview {
     Document(Box<Document>),
-    Directory(Vec<(String, bool)>),
+    Directory(Vec<(PathBuf, bool)>),
     Binary,
     LargeFile,
     NotFound,
@@ -107,7 +109,7 @@ impl Preview<'_, '_> {
         }
     }
 
-    fn dir_content(&self) -> Option<&Vec<(String, bool)>> {
+    fn dir_content(&self) -> Option<&Vec<(PathBuf, bool)>> {
         match self {
             Preview::Cached(CachedPreview::Directory(dir_content)) => Some(dir_content),
             _ => None,
@@ -269,6 +271,15 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// An event handler for syntax highlighting the currently previewed file.
     preview_highlight_handler: Sender<Arc<Path>>,
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
+
+    /// Vertical scroll of the file preview, in visual (soft-wrapped) rows relative to
+    /// the natural top of the preview. Positive scrolls down, negative scrolls up.
+    preview_scroll_offset: isize,
+    /// Height in rows of the preview pane's inner text area, used for page scrolling.
+    preview_height: u16,
+    /// Selected item the current `preview_scroll_offset` applies to; the scroll resets
+    /// to the top when the selection changes.
+    preview_scroll_cursor: u32,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -394,6 +405,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             file_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
+            preview_scroll_offset: 0,
+            preview_height: 0,
+            preview_scroll_cursor: 0,
         }
     }
 
@@ -453,6 +467,23 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     pub fn with_default_action(mut self, action: Action) -> Self {
         self.default_action = action;
         self
+    }
+
+    /// Scrolls the file preview by `amount` visual lines, down for a positive amount and
+    /// up for a negative one.
+    ///
+    /// The offset is counted in visual (soft-wrapped) rows so a file with long lines can
+    /// be scrolled to its end one wrapped row at a time. It is clamped against the file
+    /// bounds later, when the preview is rendered and the soft-wrap layout is known.
+    fn scroll_preview(&mut self, amount: isize) {
+        self.preview_scroll_offset = self.preview_scroll_offset.saturating_add(amount);
+    }
+
+    /// Whether a scrollable file preview is currently shown. Pickers without a preview
+    /// callback (no `file_fn`) or with the preview toggled off route preview-scroll keys
+    /// back to result-list navigation.
+    fn preview_shown(&self) -> bool {
+        self.show_preview && self.file_fn.is_some()
     }
 
     /// Move the cursor by a number of lines, either down (`Forward`) or up (`Backward`)
@@ -611,22 +642,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     .and_then(|metadata| {
                         if metadata.is_dir() {
                             let files = super::directory_content(&path, editor)?;
-                            let file_names: Vec<_> = files
-                                .iter()
-                                .filter_map(|(file_path, is_dir)| {
-                                    let name = file_path
-                                        .strip_prefix(&path)
-                                        .map(|p| Some(p.as_os_str()))
-                                        .unwrap_or_else(|_| file_path.file_name())?
-                                        .to_string_lossy();
-                                    if *is_dir {
-                                        Some((format!("{}/", name), true))
-                                    } else {
-                                        Some((name.into_owned(), false))
-                                    }
-                                })
-                                .collect();
-                            Ok(CachedPreview::Directory(file_names))
+                            Ok(CachedPreview::Directory(files))
                         } else if metadata.is_file() {
                             if metadata.len() > MAX_FILE_SIZE_FOR_PREVIEW {
                                 return Ok(CachedPreview::LargeFile);
@@ -879,22 +895,30 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         );
     }
 
+    #[allow(clippy::too_many_lines)]
     fn render_preview(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // -- Render the frame:
-        // clear area
-        let background = cx.editor.theme.get("ui.background");
-        let text = cx.editor.theme.get("ui.text");
-        let directory = cx.editor.theme.get("ui.text.directory");
-        surface.clear_with(area, background);
-
         const BLOCK: Block<'_> = Block::bordered();
 
-        // calculate the inner area inside the box
+        let theme = cx.editor.theme.as_ref();
+
+        surface.clear_with(area, cx.editor.theme.get("ui.background"));
+
+        // Calculate the inner area inside the box
         let inner = BLOCK.inner(area);
         // 1 column gap on either side
         let margin = Margin::horizontal(1);
         let inner = inner.inner(margin);
         BLOCK.render(area, surface);
+
+        // Reset the preview scroll on a selection change, before the `get_preview` borrow.
+        if self.cursor != self.preview_scroll_cursor {
+            self.preview_scroll_offset = 0;
+            self.preview_scroll_cursor = self.cursor;
+        }
+
+        // `get_preview` borrows `self` for the block below, so the offset is read into a
+        // local here, clamped against the soft-wrap layout inside, then written back after.
+        let mut scroll = self.preview_scroll_offset;
 
         if let Some((preview, range)) = self.get_preview(cx.editor) {
             let doc = match preview.document() {
@@ -907,17 +931,75 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 }
                 _ => {
                     if let Some(dir_content) = preview.dir_content() {
-                        for (i, (path, is_dir)) in
+                        for (idx, (path, is_dir)) in
                             dir_content.iter().take(inner.height as usize).enumerate()
                         {
-                            let style = if *is_dir { directory } else { text };
-                            surface.set_stringn(
-                                inner.x,
-                                inner.y + i as u16,
-                                path,
-                                inner.width as usize,
-                                style,
-                            );
+                            let icons = ICONS.load();
+
+                            let dir = path.file_name();
+                            let is_dir = *is_dir;
+                            // If path is `..` then this will be `None` and signifies being the
+                            // previous directory, which said another way, is the currently open
+                            // directory we are viewing.
+                            let is_open = dir.is_none() && is_dir;
+
+                            let name = dir
+                                // Path `..` does not have a name, and so will become `..` as a string.
+                                .map_or_else(|| Cow::Borrowed(".."), |dir| dir.to_string_lossy());
+
+                            if is_dir {
+                                let width = icons
+                                    .fs()
+                                    .directory()
+                                    .map(|dir| dir.get(&name, is_open))
+                                    .map_or(0, |icon| {
+                                        surface.set_stringn(
+                                            inner.x,
+                                            inner.y + idx as u16,
+                                            &icon.glyph(),
+                                            inner.width as usize,
+                                            theme.get("ui.text.directory"),
+                                        );
+
+                                        icon.width()
+                                    });
+
+                                surface.set_stringn(
+                                    inner.x + width,
+                                    inner.y + idx as u16,
+                                    &format!("{name}/"),
+                                    inner.width as usize,
+                                    theme.get("ui.text.directory"),
+                                );
+                            } else if let Some(icon) = icons
+                                .fs()
+                                .file()
+                                .map(|file| file.get_with_style_or_default(path, theme))
+                            {
+                                surface.set_stringn(
+                                    inner.x,
+                                    inner.y + idx as u16,
+                                    &icon.glyph(),
+                                    inner.width as usize,
+                                    icon.style(),
+                                );
+
+                                surface.set_stringn(
+                                    inner.x + icon.width(),
+                                    inner.y + idx as u16,
+                                    &name,
+                                    inner.width as usize,
+                                    theme.get("ui.text"),
+                                );
+                            } else {
+                                surface.set_stringn(
+                                    inner.x,
+                                    inner.y + idx as u16,
+                                    &name,
+                                    inner.width as usize,
+                                    theme.get("ui.text"),
+                                );
+                            }
                         }
                         return;
                     }
@@ -925,10 +1007,19 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     let alt_text = preview.placeholder();
                     let x = inner.x + inner.width.saturating_sub(alt_text.len() as u16) / 2;
                     let y = inner.y + inner.height / 2;
-                    surface.set_stringn(x, y, alt_text, inner.width as usize, text);
+
+                    surface.set_stringn(
+                        x,
+                        y,
+                        alt_text,
+                        inner.width as usize,
+                        cx.editor.theme.get("ui.text"),
+                    );
+
                     return;
                 }
             };
+            let doc_height = doc.text().len_lines();
 
             let mut offset = ViewPosition::default();
             if let Some((start_line, end_line)) = range {
@@ -957,12 +1048,90 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 }
             }
 
+            // Apply the preview scroll by moving the anchor by whole visual lines, so
+            // soft-wrapped lines scroll one wrapped row at a time. `offset.anchor` is the
+            // natural top of the preview (line 0, or the centred match for range previews)
+            // and is left untouched when there is no scroll, keeping that centring. An
+            // upward scroll is clamped to the start of the file by `char_idx_at_visual_offset`.
+            let mut at_bottom = false;
+            if scroll != 0 {
+                let text = doc.text().slice(..);
+                let text_fmt = doc.text_format(inner.width, None);
+                let annotations = TextAnnotations::default();
+                let natural_anchor = offset.anchor;
+
+                let (anchor, vertical_offset) = char_idx_at_visual_offset(
+                    text,
+                    natural_anchor,
+                    scroll,
+                    0,
+                    &text_fmt,
+                    &annotations,
+                );
+
+                // The anchor that keeps the file's last visual line on the bottom row, so a
+                // downward scroll can't run past the end into empty space. Found by walking
+                // up one viewport from the end: a screenful of rows at most.
+                let (max_anchor, _) = char_idx_at_visual_offset(
+                    text,
+                    text.len_chars().saturating_sub(1),
+                    -(inner.height as isize - 1),
+                    0,
+                    &text_fmt,
+                    &annotations,
+                );
+
+                if anchor >= max_anchor {
+                    at_bottom = true;
+                    offset.anchor = max_anchor;
+                    offset.vertical_offset = 0;
+
+                    // Scrolled past the bottom: clamp the stored offset to the scroll that
+                    // exactly reaches it, so the offset can't accumulate and the next upward
+                    // scroll responds at once. Measured between the in-range natural and
+                    // bottom anchors (not the applied anchor, which may sit past EOF where it
+                    // can't be measured), capped at the current offset.
+                    if anchor > max_anchor {
+                        let max_scroll = visual_offset_from_anchor(
+                            text,
+                            natural_anchor,
+                            max_anchor,
+                            &text_fmt,
+                            &annotations,
+                            scroll.unsigned_abs(),
+                        )
+                        .map_or(scroll, |(pos, _)| pos.row as isize);
+                        scroll = scroll.min(max_scroll);
+                    }
+                } else {
+                    offset.anchor = anchor;
+                    offset.vertical_offset = vertical_offset;
+
+                    // Past the top: `char_idx_at_visual_offset` already pinned the anchor to
+                    // the start, so normalise a negative offset to the rows actually
+                    // scrolled, keeping it from accumulating above the top.
+                    if scroll < 0 && anchor <= natural_anchor {
+                        scroll = visual_offset_from_anchor(
+                            text,
+                            anchor,
+                            natural_anchor,
+                            &text_fmt,
+                            &annotations,
+                            scroll.unsigned_abs(),
+                        )
+                        .map_or(scroll, |(pos, _)| -(pos.row as isize));
+                    }
+                }
+            }
+
             let loader = cx.editor.syn_loader.load();
             let config = cx.editor.config();
 
             let syntax_highlighter =
                 EditorView::doc_syntax_highlighter(doc, offset.anchor, area.height, &loader);
+
             let mut overlay_highlights = Vec::new();
+
             if doc
                 .language_config()
                 .and_then(|config| config.rainbow_brackets)
@@ -993,6 +1162,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     .theme
                     .try_get("ui.highlight")
                     .unwrap_or_else(|| cx.editor.theme.get("ui.selection"));
+
                 let draw_highlight = move |renderer: &mut TextRenderer, pos: LinePos| {
                     if (start..=end).contains(&pos.doc_line) {
                         let area = Rect::new(
@@ -1001,11 +1171,14 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                             renderer.viewport.width,
                             1,
                         );
-                        renderer.set_style(area, style)
+                        renderer.set_style(area, style);
                     }
                 };
+
                 decorations.add_decoration(draw_highlight);
             }
+
+            let current_line = doc.text().slice(..).char_to_line(offset.anchor);
 
             render_document(
                 surface,
@@ -1019,7 +1192,41 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 &cx.editor.theme,
                 decorations,
             );
+
+            // Scroll indicator on the right edge. The thumb is placed from document lines,
+            // which is approximate when lines soft-wrap, so it is pinned to the end once the
+            // preview is scrolled to the bottom and otherwise clamped within the track.
+            let win_height = inner.height as usize;
+            let scroll_style = cx.editor.theme.get("ui.menu.scroll");
+
+            if doc_height > win_height {
+                let scroll_height = win_height.pow(2).div_ceil(doc_height).min(win_height);
+                let track = win_height - scroll_height;
+                let scroll_line = if at_bottom {
+                    track
+                } else {
+                    (track * current_line / std::cmp::max(1, doc_height.saturating_sub(win_height)))
+                        .min(track)
+                };
+
+                let mut cell;
+                for i in 0..win_height {
+                    cell = &mut surface[(inner.right() - 1, inner.top() + i as u16)];
+                    cell.set_symbol("▐");
+
+                    if scroll_line <= i && i < scroll_line + scroll_height {
+                        // thumb
+                        cell.set_fg(scroll_style.fg.unwrap_or(helix_view::theme::Color::Reset));
+                    } else {
+                        // track
+                        cell.set_fg(scroll_style.bg.unwrap_or(helix_view::theme::Color::Reset));
+                    }
+                }
+            }
         }
+
+        // Persist the offset clamped against the soft-wrap layout above.
+        self.preview_scroll_offset = scroll;
     }
 }
 
@@ -1093,10 +1300,24 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             key!(Tab) | key!(Down) | ctrl!('n') => {
                 self.move_by(1, Direction::Forward);
             }
-            key!(PageDown) | ctrl!('d') => {
+            // Ctrl-d/Ctrl-u always page the result list. PageDown/PageUp scroll the
+            // preview a full page when one is shown, and otherwise page the list.
+            ctrl!('d') => {
                 self.page_down();
             }
-            key!(PageUp) | ctrl!('u') => {
+            ctrl!('u') => {
+                self.page_up();
+            }
+            key!(PageDown) if self.preview_shown() => {
+                self.scroll_preview(self.preview_height as isize);
+            }
+            key!(PageUp) if self.preview_shown() => {
+                self.scroll_preview(-(self.preview_height as isize));
+            }
+            key!(PageDown) => {
+                self.page_down();
+            }
+            key!(PageUp) => {
                 self.page_up();
             }
             key!(Home) => {
@@ -1161,6 +1382,17 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             ctrl!('t') => {
                 self.toggle_preview();
             }
+            // Preview line scrolling. Alt-d/f/b are intentionally avoided here: the prompt
+            // keybinds (which also apply in pickers) use them for word editing in the
+            // query, and full-page preview scrolling is already on PageUp/PageDown.
+            alt!('k') | shift!(Up) if self.preview_shown() => {
+                let lines = ctx.editor.config().scroll_lines.unsigned_abs() as isize;
+                self.scroll_preview(-lines);
+            }
+            alt!('j') | shift!(Down) if self.preview_shown() => {
+                let lines = ctx.editor.config().scroll_lines.unsigned_abs() as isize;
+                self.scroll_preview(lines);
+            }
             _ => {
                 self.prompt_handle_event(event, ctx);
             }
@@ -1190,6 +1422,8 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
 
     fn required_size(&mut self, (width, height): (u16, u16)) -> Option<(u16, u16)> {
         self.completion_height = height.saturating_sub(4 + self.header_height());
+        self.preview_height = height.saturating_sub(2);
+
         Some((width, height))
     }
 
